@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `kpi_categories` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`name` varchar(128) NOT NULL,\n\t`type` enum('revenue','budget','variance','profitability') NOT NULL,\n\t`description` text,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\tCONSTRAINT `kpi_categories_id` PRIMARY KEY(`id`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2NJbMAsbVBR6zF2.aff148b2749c --database 4NGy9JPiJymnNKv4vcbvdT --execute CREATE TABLE `kpi_categories` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`name` varchar(128) NOT NULL,\n\t`type` enum('revenue','budget','variance','profitability') NOT NULL,\n\t`description` text,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\tCONSTRAINT `kpi_categories_id` PRIMARY KEY(`id`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 128
+}

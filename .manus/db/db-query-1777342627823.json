@@ -1,0 +1,9 @@
+{
+  "query": "CREATE TABLE `columns` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`boardId` int NOT NULL,\n\t`name` varchar(128) NOT NULL,\n\t`color` varchar(32) DEFAULT '#e2e8f0',\n\t`position` int NOT NULL DEFAULT 0,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\tCONSTRAINT `columns_id` PRIMARY KEY(`id`)\n)",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2NJbMAsbVBR6zF2.aff148b2749c --database 4NGy9JPiJymnNKv4vcbvdT --execute CREATE TABLE `columns` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`boardId` int NOT NULL,\n\t`name` varchar(128) NOT NULL,\n\t`color` varchar(32) DEFAULT '#e2e8f0',\n\t`position` int NOT NULL DEFAULT 0,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\tCONSTRAINT `columns_id` PRIMARY KEY(`id`)\n)",
+  "rows": [],
+  "messages": [],
+  "stdout": "",
+  "stderr": "",
+  "execution_time_ms": 260
+}
