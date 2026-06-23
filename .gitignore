@@ -9,6 +9,8 @@ build/
 
 # Environment variables
 .env
+scripts/deploy.env
+scripts/.cache/
 .env.local
 .env.development.local
 .env.test.local
@@ -109,5 +111,6 @@ temp/
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
 
-# Manus version file (auto-generated, not part of source)
-client/public/__manus__/version.json
+# Uploads (local dev storage)
+uploads/
+server/uploads/

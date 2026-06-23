@@ -1,13 +1,20 @@
 import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { Settings as SettingsIcon, User, Shield, Bell, LogOut } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Settings() {
   const { user, logout } = useAuth();
+  const { data: prefs, refetch } = trpc.preferences.get.useQuery();
+  const updatePrefs = trpc.preferences.update.useMutation({
+    onSuccess: () => { refetch(); toast.success("Preferences saved"); },
+  });
 
   const initials = user?.name
     ? user.name.split(" ").map((n) => n[0]).join("").toUpperCase().slice(0, 2)
@@ -20,7 +27,6 @@ export default function Settings() {
         <p className="text-muted-foreground text-sm mt-1">Manage your account and preferences</p>
       </div>
 
-      {/* Profile Card */}
       <Card className="border-0 shadow-sm">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
@@ -53,7 +59,6 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Account Info */}
       <Card className="border-0 shadow-sm">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
@@ -65,38 +70,63 @@ export default function Settings() {
           <div className="flex items-center justify-between py-2">
             <div>
               <p className="text-sm font-medium">Authentication</p>
-              <p className="text-xs text-muted-foreground">Signed in via Manus OAuth</p>
+              <p className="text-xs text-muted-foreground">
+                Signed in via {user?.loginMethod ?? "OAuth"}
+              </p>
             </div>
             <Badge variant="secondary" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">
               Active
             </Badge>
           </div>
-          <Separator />
-          <div className="flex items-center justify-between py-2">
-            <div>
-              <p className="text-sm font-medium">Login Method</p>
-              <p className="text-xs text-muted-foreground">{user?.loginMethod ?? "Manus"}</p>
-            </div>
-          </div>
         </CardContent>
       </Card>
 
-      {/* Notifications placeholder */}
       <Card className="border-0 shadow-sm">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
             <Bell className="h-3.5 w-3.5" />
-            Notifications
+            Email Notifications
           </CardTitle>
         </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Notification preferences will be available in a future update.
-          </p>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="assign" className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Task assignments</span>
+              <span className="text-xs text-muted-foreground font-normal">When you are assigned to a task</span>
+            </Label>
+            <Switch
+              id="assign"
+              checked={prefs?.emailOnAssignment !== false}
+              onCheckedChange={(v) => updatePrefs.mutate({ emailOnAssignment: v })}
+            />
+          </div>
+          <Separator />
+          <div className="flex items-center justify-between">
+            <Label htmlFor="mention" className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Mentions</span>
+              <span className="text-xs text-muted-foreground font-normal">When someone @mentions you in a comment</span>
+            </Label>
+            <Switch
+              id="mention"
+              checked={prefs?.emailOnMention !== false}
+              onCheckedChange={(v) => updatePrefs.mutate({ emailOnMention: v })}
+            />
+          </div>
+          <Separator />
+          <div className="flex items-center justify-between">
+            <Label htmlFor="invite" className="flex flex-col gap-0.5">
+              <span className="text-sm font-medium">Invite accepted</span>
+              <span className="text-xs text-muted-foreground font-normal">When someone accepts your project invite</span>
+            </Label>
+            <Switch
+              id="invite"
+              checked={prefs?.emailOnInviteAccepted !== false}
+              onCheckedChange={(v) => updatePrefs.mutate({ emailOnInviteAccepted: v })}
+            />
+          </div>
         </CardContent>
       </Card>
 
-      {/* Danger Zone */}
       <Card className="border-0 shadow-sm border-destructive/20">
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-semibold uppercase tracking-wider text-destructive/70">

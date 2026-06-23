@@ -58,6 +58,7 @@ import {
   TrendingDown,
   TrendingUp,
   Trash2,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -662,6 +663,18 @@ export default function Finance() {
     onSuccess: () => { utils.kpi.entries.invalidate(); toast.success("Entry deleted"); },
   });
 
+  const handleExport = async () => {
+    const csv = await utils.client.kpi.exportCsv.query();
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `kpi-export-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("KPI data exported");
+  };
+
   const isLoading = catsLoading || entriesLoading;
 
   return (
@@ -690,6 +703,10 @@ export default function Finance() {
               <SelectItem value="annual">Annual</SelectItem>
             </SelectContent>
           </Select>
+          <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs" onClick={handleExport}>
+            <Download className="h-3 w-3" />
+            Export CSV
+          </Button>
           <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs" onClick={() => setShowAddCategory(true)}>
             <Plus className="h-3 w-3" />
             Category

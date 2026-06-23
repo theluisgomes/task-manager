@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useParams, useLocation } from "wouter";
 import {
   DndContext,
@@ -57,9 +57,13 @@ import {
   X,
   Edit3,
   AlertCircle,
+  MessageSquare,
+  Paperclip,
+  Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import { format, differenceInDays, isToday, isTomorrow } from "date-fns";
+import { inferStatusFromColumnName, inferStatusFromColumnPosition } from "@shared/kanban";
 
 type Task = {
   id: number;
@@ -341,6 +345,99 @@ function BoardColumn({
   );
 }
 
+// ─── Task Comments & Attachments (edit mode) ──────────────────────────────────
+function TaskExtras({ taskId, boardId }: { taskId: number; boardId: number }) {
+  const [comment, setComment] = useState("");
+  const utils = trpc.useUtils();
+  const { data: comments } = trpc.tasks.comments.useQuery({ taskId }, { enabled: taskId > 0 });
+  const { data: attachments } = trpc.tasks.attachments.useQuery({ taskId }, { enabled: taskId > 0 });
+
+  const addComment = trpc.tasks.addComment.useMutation({
+    onSuccess: () => {
+      utils.tasks.comments.invalidate({ taskId });
+      setComment("");
+      toast.success("Comment added");
+    },
+  });
+
+  const uploadAttachment = trpc.tasks.uploadAttachment.useMutation({
+    onSuccess: () => {
+      utils.tasks.attachments.invalidate({ taskId });
+      toast.success("File uploaded");
+    },
+    onError: () => toast.error("Upload failed — check storage configuration"),
+  });
+
+  const deleteAttachment = trpc.tasks.deleteAttachment.useMutation({
+    onSuccess: () => utils.tasks.attachments.invalidate({ taskId }),
+  });
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const base64 = (reader.result as string).split(",")[1];
+      if (base64) {
+        uploadAttachment.mutate({
+          taskId,
+          fileName: file.name,
+          contentType: file.type,
+          dataBase64: base64,
+        });
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  return (
+    <div className="space-y-4 border-t pt-4">
+      <div className="space-y-2">
+        <Label className="flex items-center gap-1.5"><MessageSquare className="h-3.5 w-3.5" /> Comments</Label>
+        <div className="space-y-2 max-h-32 overflow-y-auto">
+          {(comments ?? []).map((c) => (
+            <div key={c.id} className="text-xs bg-muted/50 rounded-md p-2">
+              <span className="font-medium">{c.userName ?? "User"}</span>
+              <span className="text-muted-foreground ml-2">{format(new Date(c.createdAt), "MMM d")}</span>
+              <p className="mt-1">{c.content}</p>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <Input
+            placeholder="Add a comment (@email to mention)"
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            className="h-8 text-xs"
+            onKeyDown={(e) => e.key === "Enter" && comment.trim() && addComment.mutate({ taskId, content: comment.trim() })}
+          />
+          <Button size="sm" className="h-8" disabled={!comment.trim() || addComment.isPending} onClick={() => addComment.mutate({ taskId, content: comment.trim() })}>
+            Post
+          </Button>
+        </div>
+      </div>
+      <div className="space-y-2">
+        <Label className="flex items-center gap-1.5"><Paperclip className="h-3.5 w-3.5" /> Attachments</Label>
+        <div className="space-y-1">
+          {(attachments ?? []).map((a) => (
+            <div key={a.id} className="flex items-center justify-between text-xs bg-muted/50 rounded-md px-2 py-1.5">
+              <a href={a.url} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:underline truncate">
+                <Download className="h-3 w-3 shrink-0" />
+                {a.fileName}
+              </a>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => deleteAttachment.mutate({ id: a.id, taskId })}>
+                <Trash2 className="h-3 w-3" />
+              </Button>
+            </div>
+          ))}
+        </div>
+        <Input type="file" className="h-8 text-xs" onChange={handleFile} disabled={uploadAttachment.isPending} />
+      </div>
+    </div>
+  );
+}
+
 // ─── Task Modal ───────────────────────────────────────────────────────────────
 function TaskModal({
   open,
@@ -370,23 +467,38 @@ function TaskModal({
   const [dueDate, setDueDate] = useState(task?.dueDate ? format(new Date(task.dueDate), "yyyy-MM-dd") : "");
   const [selColumnId, setSelColumnId] = useState<string>(task?.columnId?.toString() ?? columnId.toString());
 
+  useEffect(() => {
+    if (!open) return;
+    setTitle(task?.title ?? "");
+    setDescription(task?.description ?? "");
+    setPriority(task?.priority ?? "medium");
+    setStatus(task?.status ?? "todo");
+    setAssigneeId(task?.assigneeId?.toString() ?? "");
+    setDueDate(task?.dueDate ? format(new Date(task.dueDate), "yyyy-MM-dd") : "");
+    setSelColumnId(task?.columnId?.toString() ?? columnId.toString());
+  }, [open, task, columnId]);
+
   const createTask = trpc.tasks.create.useMutation({
     onSuccess: () => { utils.tasks.byBoard.invalidate({ boardId }); toast.success("Task created"); onClose(); },
-    onError: () => toast.error("Failed to create task"),
+    onError: (err) => toast.error(err.message || "Failed to create task"),
   });
 
   const updateTask = trpc.tasks.update.useMutation({
     onSuccess: () => { utils.tasks.byBoard.invalidate({ boardId }); toast.success("Task updated"); onClose(); },
-    onError: () => toast.error("Failed to update task"),
+    onError: (err) => toast.error(err.message || "Failed to update task"),
   });
 
   const handleSubmit = () => {
     if (!title.trim()) return;
+    const col = columns.find((c) => c.id === parseInt(selColumnId));
+    const resolvedStatus = col
+      ? inferStatusFromColumnName(col.name) ?? inferStatusFromColumnPosition(col.position)
+      : status;
     const payload = {
       title: title.trim(),
       description: description || undefined,
       priority,
-      status,
+      status: resolvedStatus,
       assigneeId: assigneeId ? parseInt(assigneeId) : undefined,
       dueDate: dueDate || undefined,
       columnId: parseInt(selColumnId),
@@ -399,7 +511,7 @@ function TaskModal({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
+    <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit Task" : "New Task"}</DialogTitle>
@@ -494,6 +606,7 @@ function TaskModal({
               </SelectContent>
             </Select>
           </div>
+          {isEdit && task && <TaskExtras taskId={task.id} boardId={boardId} />}
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
@@ -544,7 +657,11 @@ export default function BoardView() {
   });
 
   const deleteColumn = trpc.columns.delete.useMutation({
-    onSuccess: () => { utils.columns.byBoard.invalidate({ boardId }); toast.success("Column deleted"); },
+    onSuccess: () => {
+      utils.columns.byBoard.invalidate({ boardId });
+      utils.tasks.byBoard.invalidate({ boardId });
+      toast.success("Column deleted");
+    },
   });
 
   const updateColumn = trpc.columns.update.useMutation({
@@ -602,10 +719,18 @@ export default function BoardView() {
     const newTasks = [...targetTasks];
     newTasks.splice(overTaskIdx, 0, activeTask);
 
+    const columnChanged = targetColumnId !== activeTask.columnId;
+    const targetColumn = (cols ?? []).find((c) => c.id === targetColumnId);
+    const inferredStatus = targetColumn
+      ? inferStatusFromColumnName(targetColumn.name) ?? inferStatusFromColumnPosition(targetColumn.position)
+      : activeTask.status;
+    const newStatus = columnChanged ? inferredStatus : activeTask.status;
+
     const updates = newTasks.map((t, i) => ({
       id: t.id,
       position: i,
       columnId: targetColumnId,
+      ...(t.id === activeTask.id && columnChanged ? { status: newStatus } : {}),
     }));
 
     // Optimistic update
@@ -613,12 +738,12 @@ export default function BoardView() {
       if (!old) return old;
       return old.map((t) => {
         const upd = updates.find((u) => u.id === t.id);
-        if (upd) return { ...t, columnId: upd.columnId, position: upd.position };
+        if (upd) return { ...t, columnId: upd.columnId, position: upd.position, status: upd.status ?? t.status };
         return t;
       });
     });
 
-    reorderTasks.mutate({ updates });
+    reorderTasks.mutate({ boardId, updates });
   };
 
   const isLoading = colsLoading || tasksLoading;
@@ -699,9 +824,9 @@ export default function BoardView() {
         </div>
       </div>
 
-      {/* Board Content */}
-      <div className="flex-1 overflow-x-auto overflow-y-hidden">
-        <div className="flex gap-5 p-6 h-full min-w-max">
+      {/* Board Content — horizontal scroll on desktop, stacked on mobile */}
+      <div className="flex-1 overflow-x-auto overflow-y-auto md:overflow-y-hidden">
+        <div className="flex flex-col md:flex-row gap-5 p-4 md:p-6 md:h-full md:min-w-max">
           <DndContext
             sensors={sensors}
             collisionDetection={closestCorners}
@@ -717,8 +842,8 @@ export default function BoardView() {
                 onAddTask={(colId) => setTaskModal({ open: true, task: null, columnId: colId })}
                 onEditTask={(task) => setTaskModal({ open: true, task, columnId: task.columnId })}
                 onDeleteTask={(id) => deleteTask.mutate({ id })}
-                onDeleteColumn={(id) => deleteColumn.mutate({ id })}
-                onRenameColumn={(id, name) => updateColumn.mutate({ id, name })}
+                onDeleteColumn={(id) => deleteColumn.mutate({ id, boardId })}
+                onRenameColumn={(id, name) => updateColumn.mutate({ id, name, boardId })}
               />
             ))}
 
