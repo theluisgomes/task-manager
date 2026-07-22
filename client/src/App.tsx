@@ -10,8 +10,10 @@ import Projects from "./pages/Projects";
 import BoardView from "./pages/BoardView";
 import Team from "./pages/Team";
 import Finance from "./pages/Finance";
+import CalendarPage from "./pages/Calendar";
 import Settings from "./pages/Settings";
 import InvitePage from "./pages/Invite";
+import Crm from "./pages/Crm";
 
 function AppRoutes() {
   return (
@@ -24,8 +26,10 @@ function AppRoutes() {
             <Route path="/projects" component={Projects} />
             <Route path="/projects/:projectId/board/:boardId" component={BoardView} />
             <Route path="/projects/:projectId" component={Projects} />
+            <Route path="/crm" component={Crm} />
             <Route path="/team" component={Team} />
             <Route path="/finance" component={Finance} />
+            <Route path="/calendar" component={CalendarPage} />
             <Route path="/settings" component={Settings} />
             <Route path="/404" component={NotFound} />
             <Route component={NotFound} />

@@ -18,6 +18,8 @@ export const ENV = {
   smtpSecure: process.env.SMTP_SECURE === "true",
   smtpUser: process.env.SMTP_USER ?? "",
   smtpPass: process.env.SMTP_PASS ?? "",
+  paymentReminderEmail: process.env.PAYMENT_REMINDER_EMAIL ?? "rodrigo@wisemetrics.in",
+  cronSecret: process.env.CRON_SECRET ?? "",
 };
 
 export function isOAuthConfigured(): boolean {

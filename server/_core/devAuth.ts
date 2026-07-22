@@ -26,6 +26,7 @@ export function registerDevAuthRoutes(app: Express) {
         // Dev login uses a separate openId from OAuth users. When DATABASE_URL
         // points at a shared DB (e.g. Cloud SQL), grant access to existing projects.
         await db.ensureUserAccessToAllProjects(devUser.id, "admin");
+        void db.recordPlatformVisit(devUser.id);
       }
 
       const sessionToken = await sdk.createSessionToken(DEV_OPEN_ID, {

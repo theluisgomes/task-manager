@@ -114,3 +114,6 @@ temp/
 # Uploads (local dev storage)
 uploads/
 server/uploads/
+
+# Weekly maintenance reports (local only)
+reports/*.md

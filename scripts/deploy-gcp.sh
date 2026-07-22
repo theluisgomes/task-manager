@@ -58,6 +58,15 @@ service_url() {
     --format='value(status.url)' 2>/dev/null
 }
 
+# Public URL used for OAuth redirects (custom domain if set, else Cloud Run URL).
+public_url() {
+  if [[ -n "${CUSTOM_DOMAIN:-}" ]]; then
+    echo "${CUSTOM_DOMAIN%/}"
+  else
+    service_url
+  fi
+}
+
 # Create a secret if absent, otherwise add a new version. Stdin = value.
 put_secret() {
   local name="$1"
@@ -194,8 +203,8 @@ cmd_migrate() {
     sleep 1
   done
 
-  log "Running migrations (pnpm db:push)..."
-  DATABASE_URL="mysql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:3307/${DB_NAME}" pnpm db:push
+  log "Running migrations (pnpm db:migrate)..."
+  DATABASE_URL="mysql://${DB_USER}:${DB_PASSWORD}@127.0.0.1:3307/${DB_NAME}" pnpm db:migrate
 
   kill "$proxy_pid" 2>/dev/null || true
   trap - EXIT
@@ -233,14 +242,18 @@ cmd_deploy() {
     --set-secrets="$secrets" \
     --min-instances=0 --max-instances=3 --memory=512Mi
 
-  # Now that we have a URL, set OAUTH_REDIRECT_BASE_URL to match it.
-  local url; url="$(service_url)"
+  # Set OAUTH_REDIRECT_BASE_URL to the public URL (custom domain or Cloud Run default).
+  local url; url="$(public_url)"
+  [[ -n "$url" ]] || die "Could not determine service URL — set CUSTOM_DOMAIN in $CONFIG_FILE or check Cloud Run."
   log "Setting OAUTH_REDIRECT_BASE_URL=$url"
   gcloud run services update "$SERVICE_NAME" \
     --project="$PROJECT_ID" --region="$REGION" \
     --update-env-vars="OAUTH_REDIRECT_BASE_URL=${url}" >/dev/null
 
   log "Deployed: $url"
+  if [[ -n "${CUSTOM_DOMAIN:-}" ]]; then
+    printf '\n\033[1;33mnote:\033[0m CUSTOM_DOMAIN is set. Ensure DNS + Cloud Run domain mapping are active.\n'
+  fi
   printf '\n\033[1;32mNEXT:\033[0m In Google Console → Credentials → your OAuth client, set:\n'
   printf '   Authorized redirect URI:   %s/api/auth/callback\n' "$url"
   printf '   Authorized JS origin:      %s\n\n' "$url"
@@ -272,7 +285,10 @@ cmd_whoami() {
   trap - EXIT
 }
 
-cmd_url() { load_config; service_url; }
+cmd_url() {
+  load_config
+  public_url || service_url
+}
 
 main() {
   local cmd="${1:-all}"

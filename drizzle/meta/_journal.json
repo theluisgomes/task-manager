@@ -29,6 +29,48 @@
       "when": 1782190365174,
       "tag": "0003_sticky_tyrannus",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1782191000000,
+      "tag": "0004_board_collaboration",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1782300000000,
+      "tag": "0005_crm_operational",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1782400000000,
+      "tag": "0006_billing_relative_terms",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1783017051813,
+      "tag": "0007_nosy_liz_osborn",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1783980000000,
+      "tag": "0008_platform_visits",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1784700000000,
+      "tag": "0009_modo_completo",
+      "breakpoints": true
     }
   ]
 }

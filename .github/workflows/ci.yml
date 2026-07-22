@@ -37,6 +37,29 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            if (echo > /dev/tcp/127.0.0.1/3306) >/dev/null 2>&1; then
+              echo "MySQL port is open"
+              sleep 3
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MySQL did not become ready in time"
+          exit 1
+
+      - name: Apply database migrations
+        run: pnpm db:migrate
+        env:
+          DATABASE_URL: mysql://root:root@127.0.0.1:3306/taskmanager_test
+
+      - name: Database smoke test
+        run: pnpm run doctor --smoke
+        env:
+          DATABASE_URL: mysql://root:root@127.0.0.1:3306/taskmanager_test
+
       - run: pnpm check
 
       - run: pnpm test

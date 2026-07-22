@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -61,6 +61,8 @@ import {
   Download,
 } from "lucide-react";
 import { toast } from "sonner";
+import { getProjectAreaLabel } from "@shared/projectAreas";
+import { fmtBrl } from "@shared/billing";
 
 const CHART_COLORS = [
   "oklch(0.46 0.18 264)",
@@ -110,12 +112,12 @@ function KpiStatCard({
     (value ?? 0).toLocaleString();
 
   return (
-    <Card className="border-0 shadow-sm hover:shadow-md transition-shadow duration-200">
-      <CardContent className="p-5">
+    <Card className="border-0 shadow-sm hover:shadow-md transition-shadow duration-200 bento-card">
+      <CardContent className="p-3">
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{label}</p>
-            <p className="text-2xl font-semibold mt-1.5 tracking-tight">{displayValue}</p>
+            <p className="text-xl font-semibold mt-1 tracking-tight">{displayValue}</p>
             {change != null && (
               <div className={`flex items-center gap-1 mt-1.5 text-xs font-medium ${isPositive ? "text-emerald-600" : "text-red-600"}`}>
                 {isPositive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
@@ -494,34 +496,36 @@ function VarianceTab({ entries, categories }: { entries: any[]; categories: any[
             <CardTitle className="text-sm font-semibold">Variance Detail</CardTitle>
           </CardHeader>
           <CardContent className="p-0">
+            <div className="max-h-[420px] overflow-auto">
             <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-xs">Period</TableHead>
-                  <TableHead className="text-xs">Category</TableHead>
-                  <TableHead className="text-xs text-right">Actual</TableHead>
-                  <TableHead className="text-xs text-right">Budget</TableHead>
-                  <TableHead className="text-xs text-right">Variance</TableHead>
-                  <TableHead className="text-xs text-right">%</TableHead>
+              <TableHeader className="sticky top-0 z-10 bg-card">
+                <TableRow className="h-9 hover:bg-transparent">
+                  <TableHead className="text-sm">Period</TableHead>
+                  <TableHead className="text-sm">Category</TableHead>
+                  <TableHead className="text-sm text-right">Actual</TableHead>
+                  <TableHead className="text-sm text-right">Budget</TableHead>
+                  <TableHead className="text-sm text-right">Variance</TableHead>
+                  <TableHead className="text-sm text-right">%</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {varianceData.map((row, i) => (
-                  <TableRow key={i}>
-                    <TableCell className="text-xs">{row.period}</TableCell>
-                    <TableCell className="text-xs">{row.category}</TableCell>
-                    <TableCell className="text-xs text-right">{formatCurrency(row.actual)}</TableCell>
-                    <TableCell className="text-xs text-right">{formatCurrency(row.budget)}</TableCell>
-                    <TableCell className={`text-xs text-right font-medium ${row.variance >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                  <TableRow key={i} className="h-9">
+                    <TableCell className="text-sm">{row.period}</TableCell>
+                    <TableCell className="text-sm">{row.category}</TableCell>
+                    <TableCell className="text-sm text-right">{formatCurrency(row.actual)}</TableCell>
+                    <TableCell className="text-sm text-right">{formatCurrency(row.budget)}</TableCell>
+                    <TableCell className={`text-sm text-right font-medium ${row.variance >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                       {row.variance >= 0 ? "+" : ""}{formatCurrency(row.variance)}
                     </TableCell>
-                    <TableCell className={`text-xs text-right font-medium ${row.variancePct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    <TableCell className={`text-sm text-right font-medium ${row.variancePct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
                       {formatPercent(row.variancePct)}
                     </TableCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -648,8 +652,238 @@ function EmptyChartState({ message }: { message: string }) {
   );
 }
 
+function OperationalSummaryTab() {
+  const { data, isLoading } = trpc.finance.summary.useQuery();
+  if (isLoading) return <Skeleton className="h-48" />;
+  const t = data?.totals;
+  if (!t) return null;
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <KpiStatCard label="Receita orçada" value={t.budgetedRevenue} icon={DollarSign} color="bg-primary/10 text-primary" />
+        <KpiStatCard label="Receita real" value={t.actualRevenue} icon={TrendingUp} color="bg-emerald-50 text-emerald-600" />
+        <KpiStatCard label="Custo orçado" value={t.budgetedCost} icon={BarChart3} color="bg-amber-50 text-amber-600" />
+        <KpiStatCard label="Custo real" value={t.actualCost} icon={Minus} color="bg-orange-50 text-orange-600" />
+        <KpiStatCard label="Lucro orçado" value={t.budgetedProfit} icon={Percent} color="bg-blue-50 text-blue-600" />
+        <KpiStatCard label="Lucro real" value={t.actualProfit} icon={TrendingUp} color="bg-violet-50 text-violet-600" />
+      </div>
+    </div>
+  );
+}
+
+function parseBrlInput(value: string): number {
+  const cleaned = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(cleaned);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+function EditableMoneyCell({
+  value,
+  onSave,
+  disabled,
+}: {
+  value: number;
+  onSave: (value: number) => void;
+  disabled?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) inputRef.current?.select();
+  }, [editing]);
+
+  const startEditing = () => {
+    if (disabled) return;
+    setDraft(value.toFixed(2).replace(".", ","));
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const parsed = parseBrlInput(draft);
+    setEditing(false);
+    if (parsed !== value) onSave(parsed);
+  };
+
+  if (editing) {
+    return (
+      <Input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className="h-8 w-28 text-sm tabular-nums"
+        autoFocus
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={startEditing}
+      disabled={disabled}
+      className="text-sm tabular-nums rounded px-1.5 py-0.5 -mx-1.5 hover:bg-muted/60 transition-colors text-left disabled:cursor-default disabled:hover:bg-transparent"
+      title="Clique para editar"
+    >
+      {fmtBrl(value)}
+    </button>
+  );
+}
+
+function ProjectsFinanceTab() {
+  const { data, isLoading } = trpc.finance.summary.useQuery();
+  const utils = trpc.useUtils();
+  const updateFinance = trpc.finance.updateProjectFinance.useMutation({
+    onSuccess: () => {
+      utils.finance.summary.invalidate();
+      toast.success("Valores atualizados");
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  if (isLoading) return <Skeleton className="h-48" />;
+
+  const saveField = (projectId: number, field: "budgetedRevenue" | "actualRevenue" | "actualCost", value: number) => {
+    updateFinance.mutate({ projectId, [field]: value });
+  };
+
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Project</TableHead><TableHead>Area</TableHead>
+          <TableHead>Rec. orçada</TableHead><TableHead>Rec. real</TableHead>
+          <TableHead>Custo real</TableHead><TableHead>Lucro real</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {data?.projects.map((p) => (
+          <TableRow key={p.projectId}>
+            <TableCell className="font-medium text-sm">{p.projectName}</TableCell>
+            <TableCell className="text-sm">{getProjectAreaLabel(p.area as any)}</TableCell>
+            <TableCell>
+              <EditableMoneyCell
+                value={p.budgetedRevenue}
+                onSave={(v) => saveField(p.projectId, "budgetedRevenue", v)}
+                disabled={updateFinance.isPending}
+              />
+            </TableCell>
+            <TableCell>
+              <EditableMoneyCell
+                value={p.actualRevenue}
+                onSave={(v) => saveField(p.projectId, "actualRevenue", v)}
+                disabled={updateFinance.isPending}
+              />
+            </TableCell>
+            <TableCell>
+              <EditableMoneyCell
+                value={p.actualCost}
+                onSave={(v) => saveField(p.projectId, "actualCost", v)}
+                disabled={updateFinance.isPending}
+              />
+            </TableCell>
+            <TableCell className="text-sm tabular-nums font-medium">
+              {fmtBrl(p.actualProfit)}
+            </TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+function ContractPlTab() {
+  const { data, isLoading } = trpc.finance.contractPl.useQuery();
+  const sendReminders = trpc.finance.sendPaymentReminders.useMutation({
+    onSuccess: (r) => toast.success(`Lembretes: ${r.sent} enviados, ${r.skipped} ignorados → ${r.to}`),
+    onError: (e) => toast.error(e.message),
+  });
+  if (isLoading) return <Skeleton className="h-48" />;
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-end">
+        <Button size="sm" variant="outline" className="text-xs" disabled={sendReminders.isPending}
+          onClick={() => sendReminders.mutate()}>
+          Enviar e-mails de vencimento
+        </Button>
+      </div>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Contrato</TableHead>
+            <TableHead>Projeto</TableHead>
+            <TableHead>Receita orçada</TableHead>
+            <TableHead>Receita real</TableHead>
+            <TableHead>Custo orçado</TableHead>
+            <TableHead>Custo real</TableHead>
+            <TableHead>Lucro orçado</TableHead>
+            <TableHead>Lucro real</TableHead>
+            <TableHead>Recebido</TableHead>
+            <TableHead>Pendente</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {(data?.contracts ?? []).map((c) => (
+            <TableRow key={c.id}>
+              <TableCell className="text-sm font-medium">{c.title}<div className="text-xs text-muted-foreground">{c.clientName}</div></TableCell>
+              <TableCell className="text-sm">{c.projectName ?? "—"}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.budgetedRevenue)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.actualRevenue)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.budgetedCost)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.actualCost)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.budgetedProfit)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.actualProfit)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.received)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.pending)}</TableCell>
+            </TableRow>
+          ))}
+          {!data?.contracts?.length && (
+            <TableRow><TableCell colSpan={10} className="text-center text-muted-foreground py-8">Nenhum contrato</TableCell></TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}
+
+function TeamUtilizationTab() {
+  const { data, isLoading } = trpc.finance.teamUtilization.useQuery();
+  if (isLoading) return <Skeleton className="h-48" />;
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>User</TableHead><TableHead>Project</TableHead>
+          <TableHead>Available h</TableHead><TableHead>Worked h</TableHead><TableHead>Rate</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {data?.map((row, i) => (
+          <TableRow key={i}>
+            <TableCell className="text-sm">{row.userName ?? "—"}</TableCell>
+            <TableCell className="text-sm">{row.projectName ?? "—"}</TableCell>
+            <TableCell className="text-sm">{row.availableHours}</TableCell>
+            <TableCell className="text-sm">{row.workedHours}</TableCell>
+            <TableCell className="text-sm">{row.hourlyRate ? fmtBrl(row.hourlyRate) : "—"}</TableCell>
+          </TableRow>
+        ))}
+        {!data?.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">No allocations configured</TableCell></TableRow>}
+      </TableBody>
+    </Table>
+  );
+}
+
 // ─── Main Finance Page ────────────────────────────────────────────────────────
 export default function Finance() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
+  const [mainTab, setMainTab] = useState(isAdmin ? "operational" : "utilization");
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [activeTab, setActiveTab] = useState("revenue");
@@ -679,59 +913,102 @@ export default function Finance() {
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-2xl font-semibold tracking-tight">Finance KPI</h1>
-            <Badge variant="secondary" className="bg-primary/10 text-primary border-0 text-xs">
-              Finance Dept.
-            </Badge>
+            <h1 className="text-2xl font-semibold tracking-tight">Finance</h1>
+            {isAdmin && (
+              <Badge variant="secondary" className="bg-primary/10 text-primary border-0 text-xs">Admin</Badge>
+            )}
           </div>
           <p className="text-muted-foreground text-sm mt-1">
-            Revenue projections, budget tracking, variance analysis & profitability metrics
+            Receitas, custos, lucro por projeto e utilização da equipe
           </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Select value={periodType} onValueChange={(v) => setPeriodType(v as any)}>
-            <SelectTrigger className="h-8 text-xs w-32">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="monthly">Monthly</SelectItem>
-              <SelectItem value="quarterly">Quarterly</SelectItem>
-              <SelectItem value="annual">Annual</SelectItem>
-            </SelectContent>
-          </Select>
-          <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs" onClick={handleExport}>
-            <Download className="h-3 w-3" />
-            Export CSV
-          </Button>
-          <Button variant="outline" size="sm" className="gap-1.5 h-8 text-xs" onClick={() => setShowAddCategory(true)}>
-            <Plus className="h-3 w-3" />
-            Category
-          </Button>
-          <Button size="sm" className="gap-1.5 h-8 text-xs" onClick={() => setShowAddEntry(true)}>
-            <Plus className="h-3.5 w-3.5" />
-            Add Entry
-          </Button>
         </div>
       </div>
 
+      <Tabs value={mainTab} onValueChange={setMainTab}>
+        <TabsList>
+          {isAdmin && <TabsTrigger value="operational">Resumo</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="projects">Por projeto</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="contracts">Contratos P&L</TabsTrigger>}
+          <TabsTrigger value="utilization">Utilização equipe</TabsTrigger>
+          {isAdmin && <TabsTrigger value="kpi">Histórico KPI</TabsTrigger>}
+        </TabsList>
+
+        {isAdmin && (
+          <TabsContent value="operational" className="mt-4"><OperationalSummaryTab /></TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="projects" className="mt-4"><ProjectsFinanceTab /></TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="contracts" className="mt-4"><ContractPlTab /></TabsContent>
+        )}
+        <TabsContent value="utilization" className="mt-4"><TeamUtilizationTab /></TabsContent>
+        {isAdmin && (
+          <TabsContent value="kpi" className="mt-4">
+            <LegacyKpiSection
+              showAddEntry={showAddEntry}
+              setShowAddEntry={setShowAddEntry}
+              showAddCategory={showAddCategory}
+              setShowAddCategory={setShowAddCategory}
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              periodType={periodType}
+              setPeriodType={setPeriodType}
+              categories={categories}
+              entries={entries}
+              isLoading={isLoading}
+              deleteEntry={deleteEntry}
+              handleExport={handleExport}
+            />
+          </TabsContent>
+        )}
+      </Tabs>
+
+      <AddEntryModal open={showAddEntry} onClose={() => setShowAddEntry(false)} categories={categories ?? []} />
+      <AddCategoryModal open={showAddCategory} onClose={() => setShowAddCategory(false)} />
+    </div>
+  );
+}
+
+function LegacyKpiSection({
+  showAddEntry, setShowAddEntry, showAddCategory, setShowAddCategory,
+  activeTab, setActiveTab, periodType, setPeriodType,
+  categories, entries, isLoading, deleteEntry, handleExport,
+}: {
+  showAddEntry: boolean;
+  setShowAddEntry: (v: boolean) => void;
+  showAddCategory: boolean;
+  setShowAddCategory: (v: boolean) => void;
+  activeTab: string;
+  setActiveTab: (v: string) => void;
+  periodType: "monthly" | "quarterly" | "annual";
+  setPeriodType: (v: "monthly" | "quarterly" | "annual") => void;
+  categories: any[] | undefined;
+  entries: any[] | undefined;
+  isLoading: boolean;
+  deleteEntry: { mutate: (input: { id: number }) => void };
+  handleExport: () => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-end gap-2">
+        <Select value={periodType} onValueChange={(v) => setPeriodType(v as any)}>
+          <SelectTrigger className="h-8 text-xs w-32"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="monthly">Monthly</SelectItem>
+            <SelectItem value="quarterly">Quarterly</SelectItem>
+            <SelectItem value="annual">Annual</SelectItem>
+          </SelectContent>
+        </Select>
+        <Button variant="outline" size="sm" onClick={handleExport}><Download className="h-4 w-4 mr-1" />Export</Button>
+        <Button variant="outline" size="sm" onClick={() => setShowAddCategory(true)}><Plus className="h-3 w-3 mr-1" />Category</Button>
+        <Button size="sm" onClick={() => setShowAddEntry(true)}><Plus className="h-3.5 w-3.5 mr-1" />Add Entry</Button>
+      </div>
       {isLoading ? (
-        <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <Card key={i} className="border-0 shadow-sm">
-                <CardContent className="p-5">
-                  <Skeleton className="h-4 w-24 mb-2" />
-                  <Skeleton className="h-7 w-16" />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-          <Skeleton className="h-64 w-full rounded-xl" />
-        </div>
+        <Skeleton className="h-64" />
       ) : (
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="h-9 bg-muted/50">
@@ -741,7 +1018,6 @@ export default function Finance() {
             <TabsTrigger value="profitability" className="text-xs">Profitability</TabsTrigger>
             <TabsTrigger value="data" className="text-xs">Raw Data</TabsTrigger>
           </TabsList>
-
           <TabsContent value="revenue" className="mt-6">
             <RevenueTab entries={entries ?? []} categories={categories ?? []} />
           </TabsContent>
@@ -769,31 +1045,32 @@ export default function Finance() {
                     <p className="text-sm text-muted-foreground">No entries yet. Add your first KPI entry.</p>
                   </div>
                 ) : (
+                  <div className="max-h-[480px] overflow-auto">
                   <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead className="text-xs">Period</TableHead>
-                        <TableHead className="text-xs">Category</TableHead>
-                        <TableHead className="text-xs text-right">Actual</TableHead>
-                        <TableHead className="text-xs text-right">Projected</TableHead>
-                        <TableHead className="text-xs text-right">Budget</TableHead>
-                        <TableHead className="text-xs w-10" />
+                    <TableHeader className="sticky top-0 z-10 bg-card">
+                      <TableRow className="h-9 hover:bg-transparent">
+                        <TableHead className="text-sm">Period</TableHead>
+                        <TableHead className="text-sm">Category</TableHead>
+                        <TableHead className="text-sm text-right">Actual</TableHead>
+                        <TableHead className="text-sm text-right">Projected</TableHead>
+                        <TableHead className="text-sm text-right">Budget</TableHead>
+                        <TableHead className="text-sm w-10" />
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {entries.map((entry) => {
                         const cat = categories?.find((c) => c.id === entry.categoryId);
                         return (
-                          <TableRow key={entry.id}>
-                            <TableCell className="text-xs">{entry.label ?? entry.period}</TableCell>
-                            <TableCell className="text-xs">
+                          <TableRow key={entry.id} className="h-9">
+                            <TableCell className="text-sm">{entry.label ?? entry.period}</TableCell>
+                            <TableCell className="text-sm">
                               <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
                                 {cat?.name ?? "—"}
                               </Badge>
                             </TableCell>
-                            <TableCell className="text-xs text-right">{formatCurrency(entry.actual)}</TableCell>
-                            <TableCell className="text-xs text-right">{formatCurrency(entry.projected)}</TableCell>
-                            <TableCell className="text-xs text-right">{formatCurrency(entry.budget)}</TableCell>
+                            <TableCell className="text-sm text-right">{formatCurrency(entry.actual)}</TableCell>
+                            <TableCell className="text-sm text-right">{formatCurrency(entry.projected)}</TableCell>
+                            <TableCell className="text-sm text-right">{formatCurrency(entry.budget)}</TableCell>
                             <TableCell>
                               <Button
                                 variant="ghost"
@@ -809,22 +1086,13 @@ export default function Finance() {
                       })}
                     </TableBody>
                   </Table>
+                  </div>
                 )}
               </CardContent>
             </Card>
           </TabsContent>
         </Tabs>
       )}
-
-      <AddEntryModal
-        open={showAddEntry}
-        onClose={() => setShowAddEntry(false)}
-        categories={categories ?? []}
-      />
-      <AddCategoryModal
-        open={showAddCategory}
-        onClose={() => setShowAddCategory(false)}
-      />
     </div>
   );
 }

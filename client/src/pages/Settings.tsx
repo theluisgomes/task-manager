@@ -97,6 +97,7 @@ export default function Settings() {
             <Switch
               id="assign"
               checked={prefs?.emailOnAssignment !== false}
+              disabled={updatePrefs.isPending}
               onCheckedChange={(v) => updatePrefs.mutate({ emailOnAssignment: v })}
             />
           </div>
@@ -109,6 +110,7 @@ export default function Settings() {
             <Switch
               id="mention"
               checked={prefs?.emailOnMention !== false}
+              disabled={updatePrefs.isPending}
               onCheckedChange={(v) => updatePrefs.mutate({ emailOnMention: v })}
             />
           </div>
@@ -121,6 +123,7 @@ export default function Settings() {
             <Switch
               id="invite"
               checked={prefs?.emailOnInviteAccepted !== false}
+              disabled={updatePrefs.isPending}
               onCheckedChange={(v) => updatePrefs.mutate({ emailOnInviteAccepted: v })}
             />
           </div>

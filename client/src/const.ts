@@ -15,12 +15,16 @@ export function getDevLoginUrl(): string {
   return `${window.location.origin}/api/dev/login`;
 }
 
-export function getGoogleLoginUrl(): string {
-  return `${window.location.origin}/api/auth/google`;
+export function getGoogleLoginUrl(returnTo?: string): string {
+  const url = new URL(`${window.location.origin}/api/auth/google`);
+  if (returnTo) url.searchParams.set("returnTo", returnTo);
+  return url.toString();
 }
 
-export function getMicrosoftLoginUrl(): string {
-  return `${window.location.origin}/api/auth/microsoft`;
+export function getMicrosoftLoginUrl(returnTo?: string): string {
+  const url = new URL(`${window.location.origin}/api/auth/microsoft`);
+  if (returnTo) url.searchParams.set("returnTo", returnTo);
+  return url.toString();
 }
 
 /** @deprecated Use provider-specific login URLs */

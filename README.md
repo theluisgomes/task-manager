@@ -55,7 +55,12 @@ See [`.env.example`](.env.example) for the full list. Required for production:
 | `pnpm start` | Run production server |
 | `pnpm check` | TypeScript check |
 | `pnpm test` | Run Vitest tests |
-| `pnpm db:push` | Generate and apply DB migrations |
+| `pnpm db:generate` | Generate a new migration from schema changes (dev only) |
+| `pnpm db:migrate` | Apply versioned migrations (deploy / maintenance) |
+| `pnpm db:push` | Generate and apply migrations (local dev shortcut) |
+| `pnpm run doctor` | Diagnostic checks (env, DB, integrity, deps) |
+| `pnpm run maintenance` | Weekly maintenance routine — see [docs/MAINTENANCE.md](docs/MAINTENANCE.md) |
+| `pnpm dev:up` | Bootstrap local dev (Docker MySQL + migrations + server) |
 
 ## Docker
 
@@ -67,7 +72,7 @@ This starts MySQL and the app. Set OAuth and email vars in `docker-compose.yml` 
 
 ## Deploy to Google Cloud
 
-For production on **Cloud Run + Cloud SQL**, see **[DEPLOY.md](DEPLOY.md)** — step-by-step
+For production on **Cloud Run + Cloud SQL**, see **[docs/DEPLOY.md](docs/DEPLOY.md)** — step-by-step
 guide with `scripts/deploy-gcp.sh` and `scripts/deploy.env`.
 
 ## OAuth setup
@@ -93,7 +98,22 @@ guide with `scripts/deploy-gcp.sh` and `scripts/deploy.env`.
 ## Health check
 
 ```
-GET /health → { "ok": true, "timestamp": "..." }
+GET /health → { "ok": true, "db": "connected", "timestamp": "..." }
+```
+
+Returns HTTP **503** when the database is unreachable.
+
+## Maintenance
+
+Weekly inspection and conservative auto-fixes: **[docs/MAINTENANCE.md](docs/MAINTENANCE.md)**
+
+Full documentation index: **[docs/README.md](docs/README.md)** (deploy, backlog, design tokens, Obsidian vault).
+
+Obsidian vault (notas interligadas): **[docs/Task-Manager/](docs/Task-Manager/)** — abrir a pasta como cofre no Obsidian; começar em `Task Manager Pro.md`.
+
+```bash
+pnpm run maintenance          # local
+pnpm run maintenance -- --prod   # local + GCP production checks
 ```
 
 ## License

@@ -123,6 +123,8 @@ class SDKServer {
       lastSignedIn: signedInAt,
     });
 
+    void db.recordPlatformVisit(user.id);
+
     return user;
   }
 }

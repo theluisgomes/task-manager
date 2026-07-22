@@ -29,8 +29,10 @@ import {
 import { useIsMobile } from "@/hooks/useMobile";
 import {
   BarChart3,
+  Calendar,
   ChevronRight,
   FolderKanban,
+  Handshake,
   LayoutDashboard,
   LogOut,
   Moon,
@@ -40,7 +42,7 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
-import { CSSProperties, useEffect, useRef, useState } from "react";
+import { CSSProperties, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { DashboardLayoutSkeleton } from "./DashboardLayoutSkeleton";
 import { Button } from "./ui/button";
@@ -50,8 +52,10 @@ import { useTheme } from "@/contexts/ThemeContext";
 const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/" },
   { icon: FolderKanban, label: "Projects", path: "/projects" },
+  { icon: Handshake, label: "CRM", path: "/crm" },
+  { icon: Calendar, label: "Calendar", path: "/calendar" },
   { icon: Users, label: "Team", path: "/team" },
-  { icon: TrendingUp, label: "Finance KPI", path: "/finance", badge: "Finance" },
+  { icon: TrendingUp, label: "Finance", path: "/finance", badge: "Finance" },
   { icon: Settings, label: "Settings", path: "/settings" },
 ];
 
@@ -75,12 +79,12 @@ function LoginScreen() {
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-semibold tracking-tight">Task Manager Pro</h1>
-            <p className="text-sm text-muted-foreground mt-1.5">
+            <p id="login-help" className="text-sm text-muted-foreground mt-1.5">
               Project management and financial intelligence
             </p>
           </div>
         </div>
-        <div className="flex flex-col gap-3 w-full">
+        <div className="flex flex-col gap-3 w-full" aria-describedby="login-help">
           {google && (
             <Button
               onClick={() => { window.location.href = getGoogleLoginUrl(); }}
@@ -154,11 +158,10 @@ function DashboardLayoutContent({
 }) {
   const { user, logout } = useAuth();
   const [location, setLocation] = useLocation();
-  const { state, toggleSidebar } = useSidebar();
+  const { state } = useSidebar();
   const { theme, toggleTheme } = useTheme();
   const isCollapsed = state === "collapsed";
   const [isResizing, setIsResizing] = useState(false);
-  const sidebarRef = useRef<HTMLDivElement>(null);
   const isMobile = useIsMobile();
 
   const activeMenuItem = menuItems.find((item) =>
@@ -186,14 +189,14 @@ function DashboardLayoutContent({
 
   return (
     <>
-      <div className="flex min-h-screen w-full">
-        <Sidebar
-          ref={sidebarRef}
-          collapsible="icon"
-          className="border-r border-border/50"
-          style={{ width: isMobile ? undefined : `${sidebarWidth}px` }}
-        >
-          <SidebarHeader className="px-3 py-4 border-b border-border/50">
+      <a href="#main-content" className="skip-link">
+        Skip to main content
+      </a>
+      <Sidebar
+        collapsible="icon"
+        className="border-r border-border/50"
+      >
+        <SidebarHeader className="px-3 py-4 border-b border-border/50">
             <div className="flex items-center gap-2.5">
               <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
                 <FolderKanban className="h-4 w-4 text-primary-foreground" />
@@ -264,28 +267,29 @@ function DashboardLayoutContent({
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarFooter>
-        </Sidebar>
 
-        {!isMobile && (
+        {!isMobile && !isCollapsed && (
           <div
-            className="w-1 hover:w-1.5 cursor-col-resize bg-transparent hover:bg-primary/20 transition-all shrink-0"
+            className="absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize hover:bg-primary/20 transition-colors"
             onMouseDown={() => setIsResizing(true)}
           />
         )}
+      </Sidebar>
 
-        <SidebarInset className="flex flex-col min-w-0 flex-1">
-          <header className="flex h-12 items-center gap-2 border-b border-border/50 px-4 shrink-0">
-            <SidebarTrigger className="h-8 w-8">
-              <PanelLeft className="h-4 w-4" />
-            </SidebarTrigger>
-            <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-              <BarChart3 className="h-3.5 w-3.5" />
-              <span>{activeMenuItem?.label ?? "Dashboard"}</span>
-            </div>
-          </header>
-          <main className="flex-1 overflow-auto">{children}</main>
-        </SidebarInset>
-      </div>
+      <SidebarInset className="flex flex-col min-w-0">
+        <header className="flex h-12 items-center gap-2 border-b border-border/50 px-4 shrink-0">
+          <SidebarTrigger className="h-8 w-8">
+            <PanelLeft className="h-4 w-4" />
+          </SidebarTrigger>
+          <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+            <BarChart3 className="h-3.5 w-3.5" />
+            <span>{activeMenuItem?.label ?? "Dashboard"}</span>
+          </div>
+        </header>
+        <main id="main-content" className="flex-1 overflow-auto" tabIndex={-1}>
+          {children}
+        </main>
+      </SidebarInset>
     </>
   );
 }

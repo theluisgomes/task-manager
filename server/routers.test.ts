@@ -5,7 +5,7 @@ import { COOKIE_NAME } from "../shared/const";
 import type { TrpcContext } from "./_core/context";
 
 vi.mock("./email", () => ({
-  sendEmail: vi.fn().mockResolvedValue(true),
+  sendEmail: vi.fn().mockResolvedValue({ sent: true }),
   inviteEmailHtml: vi.fn(),
   assignmentEmailHtml: vi.fn(),
   mentionEmailHtml: vi.fn(),
@@ -32,8 +32,18 @@ vi.mock("./db", () => {
   };
   return {
   assertProjectAccess: vi.fn().mockResolvedValue("owner"),
+  assertBoardAccess: vi.fn().mockResolvedValue({ projectId: 1, projectRole: "owner" }),
   getProjectIdForBoard: vi.fn().mockResolvedValue(1),
   getProjectIdForTask: vi.fn().mockResolvedValue(1),
+  getProjectMemberRole: vi.fn().mockResolvedValue("member"),
+  addProjectMember: vi.fn().mockResolvedValue(undefined),
+  addBoardMember: vi.fn().mockResolvedValue(undefined),
+  getCollaboratorsForUser: vi.fn().mockResolvedValue([
+    { id: 2, name: "Bob", email: "bob@example.com" },
+  ]),
+  getBoardMembers: vi.fn().mockResolvedValue([]),
+  removeBoardMember: vi.fn().mockResolvedValue(undefined),
+  setBoardAccessMode: vi.fn().mockResolvedValue(undefined),
   getProjects: vi.fn().mockResolvedValue([mockProject]),
   getProjectById: vi.fn().mockResolvedValue(mockProject),
   createProject: vi.fn().mockResolvedValue(1),
@@ -43,7 +53,15 @@ vi.mock("./db", () => {
   removeProjectMember: vi.fn().mockResolvedValue(undefined),
   updateProjectMemberRole: vi.fn().mockResolvedValue(undefined),
   getBoardsByProject: vi.fn().mockResolvedValue([]),
-  getBoardById: vi.fn().mockResolvedValue({ id: 1, projectId: 1, name: "Main Board", description: null, createdAt: new Date(), updatedAt: new Date() }),
+  getBoardById: vi.fn().mockResolvedValue({
+    id: 1,
+    projectId: 1,
+    name: "Main Board",
+    description: null,
+    accessMode: "project",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
   createBoard: vi.fn().mockResolvedValue(1),
   deleteBoard: vi.fn().mockResolvedValue(undefined),
   getColumnsByBoard: vi.fn().mockResolvedValue([
@@ -88,8 +106,18 @@ vi.mock("./db", () => {
   createKpiEntry: vi.fn().mockResolvedValue(1),
   deleteKpiEntry: vi.fn().mockResolvedValue(undefined),
   getDashboardStats: vi.fn().mockResolvedValue({ totalProjects: 1, taskCounts: { todo: 3, in_progress: 2, done: 5 } }),
+  getWeeklyAccessLog: vi.fn().mockResolvedValue({
+    periodStart: "2026-07-07",
+    periodEnd: "2026-07-13",
+    days: 7,
+    uniqueUsers: 0,
+    totalVisits: 0,
+    byUser: [],
+    byDay: [],
+  }),
   upsertUser: vi.fn().mockResolvedValue(undefined),
   getUserByOpenId: vi.fn().mockResolvedValue(undefined),
+  recordPlatformVisit: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -215,6 +243,8 @@ describe("team", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.team.invite({ email: "new@example.com", projectId: 1 });
     expect(result.token).toBe("abc123");
+    expect(result.emailSent).toBe(true);
+    expect(result.inviteUrl).toContain("/invite/abc123");
   });
 
   it("listMembers returns members", async () => {
@@ -222,6 +252,83 @@ describe("team", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.team.listMembers({ projectId: 1 });
     expect(Array.isArray(result)).toBe(true);
+  });
+
+  it("addMember adds an existing user to a project", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.team.addMember({ projectId: 1, userId: 2 });
+    expect(result.success).toBe(true);
+    expect(db.addProjectMember).toHaveBeenCalledWith(1, 2, "member");
+  });
+
+  it("addMember rejects adding yourself", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.team.addMember({ projectId: 1, userId: 1 })).rejects.toThrow(TRPCError);
+  });
+
+  it("invite accepts optional boardId", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.team.invite({
+      email: "new@example.com",
+      projectId: 1,
+      boardId: 1,
+    });
+    expect(result.token).toBe("abc123");
+    expect(db.createInvite).toHaveBeenCalledWith(
+      expect.objectContaining({ email: "new@example.com", projectId: 1, boardId: 1 })
+    );
+  });
+
+  it("listCollaborators returns users from shared projects", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.team.listCollaborators({ projectId: 1 });
+    expect(result[0]?.email).toBe("bob@example.com");
+  });
+});
+
+describe("boards", () => {
+  beforeEach(() => {
+    vi.mocked(db.assertBoardAccess).mockResolvedValue({ projectId: 1, projectRole: "admin" });
+    vi.mocked(db.getProjectMemberRole).mockResolvedValue("member");
+  });
+
+  it("listMembers returns board members", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    const result = await caller.boards.listMembers({ boardId: 1 });
+    expect(Array.isArray(result)).toBe(true);
+  });
+
+  it("addMember adds a project member to a restricted board", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    await caller.boards.addMember({ boardId: 1, userId: 2 });
+    expect(db.addBoardMember).toHaveBeenCalledWith(1, 2, 1);
+  });
+
+  it("addMember rejects users who are not project members", async () => {
+    vi.mocked(db.getProjectMemberRole).mockResolvedValue(null);
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.boards.addMember({ boardId: 1, userId: 99 })).rejects.toThrow(TRPCError);
+  });
+
+  it("byId throws FORBIDDEN for restricted board without access", async () => {
+    vi.mocked(db.assertBoardAccess).mockRejectedValue(new Error("FORBIDDEN"));
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.boards.byId({ id: 1 })).rejects.toThrow(TRPCError);
+  });
+
+  it("updateAccess switches board access mode", async () => {
+    const { ctx } = makeCtx();
+    const caller = appRouter.createCaller(ctx);
+    await caller.boards.updateAccess({ boardId: 1, accessMode: "restricted" });
+    expect(db.setBoardAccessMode).toHaveBeenCalledWith(1, "restricted");
   });
 });
 

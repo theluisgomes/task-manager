@@ -1,9 +1,0 @@
-{
-  "query": "CREATE TABLE `projects` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`name` varchar(255) NOT NULL,\n\t`description` text,\n\t`color` varchar(32) DEFAULT '#6366f1',\n\t`icon` varchar(64) DEFAULT 'folder',\n\t`status` enum('active','archived','completed') NOT NULL DEFAULT 'active',\n\t`ownerId` int NOT NULL,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `projects_id` PRIMARY KEY(`id`)\n)",
-  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2NJbMAsbVBR6zF2.aff148b2749c --database 4NGy9JPiJymnNKv4vcbvdT --execute CREATE TABLE `projects` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`name` varchar(255) NOT NULL,\n\t`description` text,\n\t`color` varchar(32) DEFAULT '#6366f1',\n\t`icon` varchar(64) DEFAULT 'folder',\n\t`status` enum('active','archived','completed') NOT NULL DEFAULT 'active',\n\t`ownerId` int NOT NULL,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `projects_id` PRIMARY KEY(`id`)\n)",
-  "rows": [],
-  "messages": [],
-  "stdout": "",
-  "stderr": "",
-  "execution_time_ms": 116
-}

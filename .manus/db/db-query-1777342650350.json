@@ -1,9 +1,0 @@
-{
-  "query": "CREATE TABLE `tasks` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`columnId` int NOT NULL,\n\t`boardId` int NOT NULL,\n\t`title` varchar(512) NOT NULL,\n\t`description` text,\n\t`priority` enum('low','medium','high','urgent') NOT NULL DEFAULT 'medium',\n\t`status` enum('todo','in_progress','in_review','done') NOT NULL DEFAULT 'todo',\n\t`assigneeId` int,\n\t`dueDate` timestamp NULL,\n\t`position` int NOT NULL DEFAULT 0,\n\t`tags` text,\n\t`createdById` int NOT NULL,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `tasks_id` PRIMARY KEY(`id`)\n)",
-  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway02.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 2NJbMAsbVBR6zF2.aff148b2749c --database 4NGy9JPiJymnNKv4vcbvdT --execute CREATE TABLE `tasks` (\n\t`id` int AUTO_INCREMENT NOT NULL,\n\t`columnId` int NOT NULL,\n\t`boardId` int NOT NULL,\n\t`title` varchar(512) NOT NULL,\n\t`description` text,\n\t`priority` enum('low','medium','high','urgent') NOT NULL DEFAULT 'medium',\n\t`status` enum('todo','in_progress','in_review','done') NOT NULL DEFAULT 'todo',\n\t`assigneeId` int,\n\t`dueDate` timestamp NULL,\n\t`position` int NOT NULL DEFAULT 0,\n\t`tags` text,\n\t`createdById` int NOT NULL,\n\t`createdAt` timestamp NOT NULL DEFAULT (now()),\n\t`updatedAt` timestamp NOT NULL DEFAULT (now()) ON UPDATE CURRENT_TIMESTAMP,\n\tCONSTRAINT `tasks_id` PRIMARY KEY(`id`)\n)",
-  "rows": [],
-  "messages": [],
-  "stdout": "",
-  "stderr": "",
-  "execution_time_ms": 112
-}

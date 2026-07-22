@@ -9,6 +9,7 @@ import { registerDevAuthRoutes } from "./devAuth";
 import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
+import { pingDatabase } from "../db";
 import { serveStatic, setupVite } from "./vite";
 
 function isPortAvailable(port: number): Promise<boolean> {
@@ -36,8 +37,14 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  app.get("/health", (_req, res) => {
-    res.json({ ok: true, timestamp: new Date().toISOString() });
+  app.get("/health", async (_req, res) => {
+    const dbConnected = await pingDatabase();
+    const timestamp = new Date().toISOString();
+    if (!dbConnected) {
+      res.status(503).json({ ok: false, db: "unavailable", timestamp });
+      return;
+    }
+    res.json({ ok: true, db: "connected", timestamp });
   });
 
   app.use("/uploads", express.static(path.resolve(import.meta.dirname, "../../uploads")));
@@ -45,6 +52,27 @@ async function startServer() {
   registerStorageProxy(app);
   registerDevAuthRoutes(app);
   registerOAuthRoutes(app);
+
+  app.post("/api/cron/payment-reminders", async (req, res) => {
+    const secret = process.env.CRON_SECRET;
+    const header = req.headers["authorization"];
+    const token = typeof header === "string" && header.startsWith("Bearer ")
+      ? header.slice(7)
+      : (req.headers["x-cron-secret"] as string | undefined);
+    if (secret && token !== secret) {
+      res.status(401).json({ ok: false, error: "unauthorized" });
+      return;
+    }
+    try {
+      const { sendPaymentDueReminders } = await import("../operationalDb");
+      const result = await sendPaymentDueReminders();
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      console.error("[cron/payment-reminders]", err);
+      res.status(500).json({ ok: false, error: "failed" });
+    }
+  });
+
   app.use(
     "/api/trpc",
     createExpressMiddleware({

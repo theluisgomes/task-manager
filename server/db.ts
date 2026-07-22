@@ -1,25 +1,31 @@
-import { and, desc, eq, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { nanoid } from "nanoid";
 import {
   activityLog,
+  boardMembers,
   boards,
   columns,
   InsertUser,
   kpiCategories,
   kpiEntries,
+  platformVisits,
   projectMembers,
   projects,
   taskAttachments,
+  taskAssignees,
   taskComments,
   tasks,
   teamInvites,
   userPreferences,
   users,
+  type BoardAccessMode,
   type ProjectRole,
 } from "../drizzle/schema";
+import { isBillableProjectArea } from "../shared/projectAreas";
+import { hasMinRole } from "../shared/roles";
 import { ENV } from "./_core/env";
-import { hasMinRole } from "./authz";
+import { forbidden, notFound } from "./authz";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -33,6 +39,17 @@ export async function getDb() {
     }
   }
   return _db;
+}
+
+export async function pingDatabase(): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  try {
+    await db.execute(sql`SELECT 1`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ─── Authorization ────────────────────────────────────────────────────────────
@@ -51,13 +68,36 @@ export async function getProjectMemberRole(userId: number, projectId: number): P
 export async function assertProjectAccess(
   userId: number,
   projectId: number,
-  minRole: ProjectRole = "member"
+  minRole: ProjectRole = "member",
+  isGlobalAdmin = false
 ): Promise<ProjectRole> {
+  if (isGlobalAdmin) return "owner";
+  const user = await getUserById(userId);
+  if (user?.role === "admin") return "owner";
   const role = await getProjectMemberRole(userId, projectId);
   if (!role || !hasMinRole(role, minRole)) {
     throw new Error("FORBIDDEN");
   }
   return role;
+}
+
+export async function assertBillableFinanceAccess(
+  userId: number,
+  globalRole: string,
+  projectId: number,
+  minProjectRole: ProjectRole = "admin"
+): Promise<void> {
+  const project = await getProjectById(projectId);
+  if (!project) notFound("Project not found");
+  if (!isBillableProjectArea(project.area)) {
+    forbidden("Faturamento disponível apenas para projetos de Clientes e Prospectos");
+  }
+  if (globalRole === "admin") return;
+  try {
+    await assertProjectAccess(userId, projectId, minProjectRole);
+  } catch {
+    forbidden("Acesso ao faturamento restrito a administradores do projeto");
+  }
 }
 
 export async function getProjectIdForBoard(boardId: number): Promise<number | null> {
@@ -75,9 +115,47 @@ export async function getProjectIdForTask(taskId: number): Promise<number | null
   return getProjectIdForBoard(task.boardId);
 }
 
-async function getProjectIdsForUser(userId: number): Promise<number[]> {
+export async function isBoardMember(userId: number, boardId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const [row] = await db
+    .select({ id: boardMembers.id })
+    .from(boardMembers)
+    .where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, userId)))
+    .limit(1);
+  return !!row;
+}
+
+export async function assertBoardAccess(
+  userId: number,
+  boardId: number,
+  minProjectRole: ProjectRole = "member",
+  isGlobalAdmin = false
+): Promise<{ projectId: number; projectRole: ProjectRole }> {
+  const board = await getBoardById(boardId);
+  if (!board) throw new Error("NOT_FOUND");
+  if (isGlobalAdmin) {
+    return { projectId: board.projectId, projectRole: "owner" };
+  }
+  const user = await getUserById(userId);
+  if (user?.role === "admin") {
+    return { projectId: board.projectId, projectRole: "owner" };
+  }
+  const projectRole = await assertProjectAccess(userId, board.projectId, minProjectRole);
+  if (board.accessMode === "restricted" && !hasMinRole(projectRole, "admin")) {
+    const member = await isBoardMember(userId, boardId);
+    if (!member) throw new Error("FORBIDDEN");
+  }
+  return { projectId: board.projectId, projectRole };
+}
+
+export async function getProjectIdsForUser(userId: number, isAdmin = false): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
+  if (isAdmin) {
+    const all = await db.select({ id: projects.id }).from(projects);
+    return all.map((p) => p.id);
+  }
   const rows = await db
     .select({ projectId: projectMembers.projectId })
     .from(projectMembers)
@@ -85,10 +163,19 @@ async function getProjectIdsForUser(userId: number): Promise<number[]> {
   return rows.map((r) => r.projectId);
 }
 
-async function getBoardIdsForUser(userId: number): Promise<number[]> {
+async function getBoardIdsForUser(userId: number, isAdmin = false): Promise<number[]> {
   const db = await getDb();
   if (!db) return [];
-  const projectIds = await getProjectIdsForUser(userId);
+  let projectIds: number[];
+  if (isAdmin) {
+    const active = await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(eq(projects.status, "active"));
+    projectIds = active.map((p) => p.id);
+  } else {
+    projectIds = await getProjectIdsForUser(userId);
+  }
   if (!projectIds.length) return [];
   const userBoards = await db.select({ id: boards.id }).from(boards).where(inArray(boards.projectId, projectIds));
   return userBoards.map((b) => b.id);
@@ -176,9 +263,17 @@ export async function updateUserPreferences(
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
-export async function getProjects(userId: number) {
+export async function getProjects(userId: number, isGlobalAdmin = false) {
   const db = await getDb();
   if (!db) return [];
+  if (isGlobalAdmin) {
+    // Superusers see every active project, even without membership.
+    return db
+      .select()
+      .from(projects)
+      .where(eq(projects.status, "active"))
+      .orderBy(desc(projects.createdAt));
+  }
   const memberRows = await db
     .select({ projectId: projectMembers.projectId })
     .from(projectMembers)
@@ -195,13 +290,24 @@ export async function getProjectById(id: number) {
   return result[0];
 }
 
-export async function createProject(data: { name: string; description?: string; color?: string; ownerId: number }) {
+export async function createProject(data: {
+  name: string;
+  description?: string;
+  color?: string;
+  area?: "prospectos" | "clientes" | "juridico" | "financeiro" | "comunicacao";
+  strategicPriority?: "normal" | "high" | "very_high";
+  acquisitionOwnerId?: number;
+  ownerId: number;
+}) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   const result = await db.insert(projects).values({
     name: data.name,
     description: data.description ?? null,
     color: data.color ?? null,
+    area: data.area ?? "clientes",
+    strategicPriority: data.strategicPriority ?? "normal",
+    acquisitionOwnerId: data.acquisitionOwnerId ?? null,
     ownerId: data.ownerId,
     status: "active",
   });
@@ -211,10 +317,21 @@ export async function createProject(data: { name: string; description?: string; 
     userId: data.ownerId,
     role: "owner",
   });
+  // Canonical board — one board per project by default (extras still allowed)
+  await createBoard({ projectId, name: data.name });
   return projectId;
 }
 
-export async function updateProject(id: number, data: Partial<{ name: string; description: string; color: string; status: "active" | "completed" | "archived" }>) {
+export async function updateProject(id: number, data: Partial<{
+  name: string;
+  description: string;
+  color: string;
+  area: "prospectos" | "clientes" | "juridico" | "financeiro" | "comunicacao";
+  status: "active" | "completed" | "archived";
+  strategicPriority: "normal" | "high" | "very_high";
+  linkedProjectId: number | null;
+  acquisitionOwnerId: number | null;
+}>) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   await db.update(projects).set(data).where(eq(projects.id, id));
@@ -299,10 +416,29 @@ export async function updateProjectMemberRole(projectId: number, userId: number,
 
 // ─── Boards ───────────────────────────────────────────────────────────────────
 
-export async function getBoardsByProject(projectId: number) {
+export async function getBoardsByProject(projectId: number, userId?: number, isGlobalAdmin = false) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(boards).where(eq(boards.projectId, projectId)).orderBy(boards.createdAt);
+  const allBoards = await db.select().from(boards).where(eq(boards.projectId, projectId)).orderBy(boards.createdAt);
+  if (!userId) return allBoards;
+  if (isGlobalAdmin) return allBoards;
+  const user = await getUserById(userId);
+  if (user?.role === "admin") return allBoards;
+
+  const projectRole = await getProjectMemberRole(userId, projectId);
+  if (!projectRole) return [];
+  if (hasMinRole(projectRole, "admin")) return allBoards;
+
+  const restrictedIds = allBoards.filter((b) => b.accessMode === "restricted").map((b) => b.id);
+  if (!restrictedIds.length) return allBoards;
+
+  const memberRows = await db
+    .select({ boardId: boardMembers.boardId })
+    .from(boardMembers)
+    .where(and(eq(boardMembers.userId, userId), inArray(boardMembers.boardId, restrictedIds)));
+  const allowedRestricted = new Set(memberRows.map((r) => r.boardId));
+
+  return allBoards.filter((b) => b.accessMode === "project" || allowedRestricted.has(b.id));
 }
 
 export async function getBoardById(id: number) {
@@ -330,6 +466,88 @@ export async function createBoard(data: { projectId: number; name: string; descr
   return boardId;
 }
 
+export async function updateBoard(
+  id: number,
+  data: Partial<{ name: string; description: string; accessMode: BoardAccessMode }>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.update(boards).set(data).where(eq(boards.id, id));
+}
+
+export async function setBoardAccessMode(boardId: number, accessMode: BoardAccessMode) {
+  return updateBoard(boardId, { accessMode });
+}
+
+export async function getBoardMembers(boardId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({
+      id: boardMembers.id,
+      boardId: boardMembers.boardId,
+      userId: boardMembers.userId,
+      addedById: boardMembers.addedById,
+      createdAt: boardMembers.createdAt,
+      name: users.name,
+      email: users.email,
+    })
+    .from(boardMembers)
+    .innerJoin(users, eq(boardMembers.userId, users.id))
+    .where(eq(boardMembers.boardId, boardId));
+  return rows;
+}
+
+export async function addBoardMember(boardId: number, userId: number, addedById: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  const [existing] = await db
+    .select()
+    .from(boardMembers)
+    .where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, userId)))
+    .limit(1);
+  if (existing) return;
+  await db.insert(boardMembers).values({ boardId, userId, addedById });
+}
+
+export async function removeBoardMember(boardId: number, userId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.delete(boardMembers).where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, userId)));
+}
+
+export async function getCollaboratorsForUser(userId: number, excludeProjectId?: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  const myProjects = await db
+    .select({ projectId: projectMembers.projectId })
+    .from(projectMembers)
+    .where(eq(projectMembers.userId, userId));
+  if (!myProjects.length) return [];
+
+  const projectIds = myProjects.map((p) => p.projectId);
+  const [collaboratorRows, existingInProject] = await Promise.all([
+    db
+      .selectDistinct({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+      })
+      .from(projectMembers)
+      .innerJoin(users, eq(projectMembers.userId, users.id))
+      .where(and(inArray(projectMembers.projectId, projectIds), ne(projectMembers.userId, userId))),
+    excludeProjectId
+      ? db.select({ userId: projectMembers.userId }).from(projectMembers).where(eq(projectMembers.projectId, excludeProjectId))
+      : Promise.resolve([]),
+  ]);
+
+  if (!excludeProjectId) return collaboratorRows;
+
+  const excludeIds = new Set(existingInProject.map((r) => r.userId));
+  return collaboratorRows.filter((u) => !excludeIds.has(u.id));
+}
+
 export async function deleteBoard(id: number) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
@@ -341,6 +559,7 @@ export async function deleteBoard(id: number) {
   }
   await db.delete(tasks).where(eq(tasks.boardId, id));
   await db.delete(columns).where(eq(columns.boardId, id));
+  await db.delete(boardMembers).where(eq(boardMembers.boardId, id));
   await db.delete(boards).where(eq(boards.id, id));
 }
 
@@ -432,13 +651,16 @@ export async function createTask(data: {
   priority?: "low" | "medium" | "high" | "urgent";
   status?: "todo" | "in_progress" | "in_review" | "done";
   assigneeId?: number;
+  assigneeIds?: number[];
   dueDate?: string;
+  tags?: string | null;
   createdById: number;
 }) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   const existing = await db.select({ pos: tasks.position }).from(tasks).where(eq(tasks.columnId, data.columnId)).orderBy(desc(tasks.position)).limit(1);
   const position = existing.length > 0 ? (existing[0].pos ?? 0) + 1 : 0;
+  const ids = normalizeAssigneeIds(data.assigneeIds, data.assigneeId);
   const result = await db.insert(tasks).values({
     boardId: data.boardId,
     columnId: data.columnId,
@@ -446,12 +668,14 @@ export async function createTask(data: {
     description: data.description ?? null,
     priority: data.priority ?? "medium",
     status: data.status ?? "todo",
-    assigneeId: data.assigneeId ?? null,
+    assigneeId: ids[0] ?? null,
     dueDate: data.dueDate ? new Date(data.dueDate) : null,
+    tags: data.tags ?? null,
     position,
     createdById: data.createdById,
   });
   const taskId = result[0].insertId;
+  await setTaskAssignees(taskId, ids);
   const projectId = await getProjectIdForBoard(data.boardId);
   await logActivity({
     taskId,
@@ -463,46 +687,80 @@ export async function createTask(data: {
   return taskId;
 }
 
-export async function updateTask(id: number, data: Partial<{
-  title: string;
-  description: string;
-  priority: "low" | "medium" | "high" | "urgent";
-  status: "todo" | "in_progress" | "in_review" | "done";
-  assigneeId: number | null;
-  dueDate: string | null;
-  columnId: number;
-  position: number;
-}>, actorId?: number) {
+export async function updateTask(
+  id: number,
+  data: Partial<{
+    title: string;
+    description: string;
+    priority: "low" | "medium" | "high" | "urgent";
+    status: "todo" | "in_progress" | "in_review" | "done";
+    assigneeId: number | null;
+    assigneeIds: number[];
+    dueDate: string | null;
+    columnId: number;
+    position: number;
+    tags: string | null;
+  }>,
+  actorUserId?: number
+) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
-  const [before] = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+  const before = await getTaskById(id);
+  if (!before) throw new Error("Task not found");
+
+  if (data.status === "done") {
+    const { assertTaskCanComplete } = await import("./operationalDb");
+    await assertTaskCanComplete(id);
+  }
+
   const update: Record<string, unknown> = {};
   if (data.title !== undefined) update.title = data.title;
   if (data.description !== undefined) update.description = data.description;
   if (data.priority !== undefined) update.priority = data.priority;
   if (data.status !== undefined) update.status = data.status;
-  if (data.assigneeId !== undefined) update.assigneeId = data.assigneeId;
   if (data.dueDate !== undefined) update.dueDate = data.dueDate ? new Date(data.dueDate) : null;
   if (data.columnId !== undefined) update.columnId = data.columnId;
   if (data.position !== undefined) update.position = data.position;
-  await db.update(tasks).set(update).where(eq(tasks.id, id));
+  if (data.tags !== undefined) update.tags = data.tags;
 
-  if (actorId && before) {
+  if (data.assigneeIds !== undefined) {
+    const ids = normalizeAssigneeIds(data.assigneeIds);
+    update.assigneeId = ids[0] ?? null;
+    await setTaskAssignees(id, ids);
+  } else if (data.assigneeId !== undefined) {
+    update.assigneeId = data.assigneeId;
+    await setTaskAssignees(id, data.assigneeId != null ? [data.assigneeId] : []);
+  }
+
+  if (Object.keys(update).length) {
+    await db.update(tasks).set(update).where(eq(tasks.id, id));
+  }
+
+  if (actorUserId != null) {
     const projectId = await getProjectIdForBoard(before.boardId);
     if (data.assigneeId !== undefined && data.assigneeId !== before.assigneeId) {
       await logActivity({
         taskId: id,
         projectId: projectId ?? undefined,
-        userId: actorId,
+        userId: actorUserId,
         action: "task_assigned",
         details: String(data.assigneeId ?? "unassigned"),
+      });
+    }
+    if (data.assigneeIds !== undefined) {
+      await logActivity({
+        taskId: id,
+        projectId: projectId ?? undefined,
+        userId: actorUserId,
+        action: "assignees_changed",
+        details: data.assigneeIds.join(",") || "unassigned",
       });
     }
     if (data.columnId !== undefined && data.columnId !== before.columnId) {
       await logActivity({
         taskId: id,
         projectId: projectId ?? undefined,
-        userId: actorId,
+        userId: actorUserId,
         action: "task_moved",
         details: `column:${data.columnId}`,
       });
@@ -510,9 +768,57 @@ export async function updateTask(id: number, data: Partial<{
   }
 }
 
+function normalizeAssigneeIds(assigneeIds?: number[], assigneeId?: number | null): number[] {
+  if (assigneeIds !== undefined) {
+    return Array.from(new Set(assigneeIds.filter((id) => Number.isFinite(id))));
+  }
+  if (assigneeId != null) return [assigneeId];
+  return [];
+}
+
+export async function setTaskAssignees(taskId: number, userIds: number[]) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.delete(taskAssignees).where(eq(taskAssignees.taskId, taskId));
+  const unique = Array.from(new Set(userIds));
+  if (!unique.length) return;
+  await db.insert(taskAssignees).values(unique.map((userId) => ({ taskId, userId })));
+}
+
+export async function getTaskAssigneeIds(taskId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ userId: taskAssignees.userId })
+    .from(taskAssignees)
+    .where(eq(taskAssignees.taskId, taskId));
+  return rows.map((r) => r.userId);
+}
+
+export async function getTaskAssigneesByBoard(boardId: number): Promise<Record<number, number[]>> {
+  const db = await getDb();
+  if (!db) return {};
+  const boardTasks = await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.boardId, boardId));
+  if (!boardTasks.length) return {};
+  const ids = boardTasks.map((t) => t.id);
+  const rows = await db
+    .select({ taskId: taskAssignees.taskId, userId: taskAssignees.userId })
+    .from(taskAssignees)
+    .where(inArray(taskAssignees.taskId, ids));
+  const map: Record<number, number[]> = {};
+  for (const row of rows) {
+    if (!map[row.taskId]) map[row.taskId] = [];
+    map[row.taskId].push(row.userId);
+  }
+  return map;
+}
+
 export async function deleteTask(id: number) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
+  const { deleteTaskDependenciesForTask } = await import("./operationalDb");
+  await deleteTaskDependenciesForTask(id);
+  await db.delete(taskAssignees).where(eq(taskAssignees.taskId, id));
   await db.delete(taskComments).where(eq(taskComments.taskId, id));
   await db.delete(taskAttachments).where(eq(taskAttachments.taskId, id));
   await db.delete(activityLog).where(eq(activityLog.taskId, id));
@@ -522,6 +828,10 @@ export async function deleteTask(id: number) {
 export async function reorderTasks(updates: Array<{ id: number; position: number; columnId: number; status?: "todo" | "in_progress" | "in_review" | "done" }>) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
+  const { assertTaskCanComplete } = await import("./operationalDb");
+  await Promise.all(
+    updates.filter((u) => u.status === "done").map((u) => assertTaskCanComplete(u.id))
+  );
   await Promise.all(
     updates.map((u) => {
       const set: Record<string, unknown> = { position: u.position, columnId: u.columnId };
@@ -531,26 +841,38 @@ export async function reorderTasks(updates: Array<{ id: number; position: number
   );
 }
 
-export async function getUpcomingTasks(userId: number, days: number) {
+export async function getUpcomingTasks(
+  userId: number,
+  days: number,
+  isGlobalAdmin = false,
+  limit = 50
+) {
   const db = await getDb();
   if (!db) return [];
-  const boardIds = await getBoardIdsForUser(userId);
+  const boardIds = await getBoardIdsForUser(userId, isGlobalAdmin);
   if (!boardIds.length) return [];
   const now = new Date();
   const future = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
+  // Include overdue + upcoming; exclude done. dueDate null never matches lte.
   const result = await db
     .select()
     .from(tasks)
-    .where(and(inArray(tasks.boardId, boardIds), lte(tasks.dueDate, future), gte(tasks.dueDate, now)))
+    .where(
+      and(
+        inArray(tasks.boardId, boardIds),
+        lte(tasks.dueDate, future),
+        ne(tasks.status, "done")
+      )
+    )
     .orderBy(tasks.dueDate)
-    .limit(10);
+    .limit(limit);
   return result;
 }
 
-export async function getTaskCountsByStatus(userId: number) {
+export async function getTaskCountsByStatus(userId: number, isGlobalAdmin = false) {
   const db = await getDb();
   if (!db) return {};
-  const boardIds = await getBoardIdsForUser(userId);
+  const boardIds = await getBoardIdsForUser(userId, isGlobalAdmin);
   if (!boardIds.length) return {};
   const rows = await db
     .select({ status: tasks.status, count: sql<number>`count(*)` })
@@ -688,6 +1010,7 @@ export async function createInvite(data: {
   email: string;
   name?: string;
   projectId: number;
+  boardId?: number;
   invitedById: number;
 }): Promise<{ token: string }> {
   const db = await getDb();
@@ -698,6 +1021,7 @@ export async function createInvite(data: {
     email: data.email.toLowerCase(),
     name: data.name ?? null,
     projectId: data.projectId,
+    boardId: data.boardId ?? null,
     invitedById: data.invitedById,
     token,
     status: "pending",
@@ -738,6 +1062,9 @@ export async function acceptInvite(token: string, userId: number, userEmail: str
     throw new Error("Email mismatch");
   }
   await addProjectMember(invite.projectId, userId, "member");
+  if (invite.boardId) {
+    await addBoardMember(invite.boardId, userId, invite.invitedById);
+  }
   await db.update(teamInvites).set({ status: "accepted" }).where(eq(teamInvites.id, invite.id));
   return invite;
 }
@@ -754,21 +1081,49 @@ export async function acceptPendingInvitesForEmail(email: string, openId: string
   for (const invite of pending) {
     if (invite.expiresAt >= new Date()) {
       await addProjectMember(invite.projectId, user.id, "member");
+      if (invite.boardId) {
+        await addBoardMember(invite.boardId, user.id, invite.invitedById);
+      }
       await db.update(teamInvites).set({ status: "accepted" }).where(eq(teamInvites.id, invite.id));
     }
   }
 }
 
-export async function getWorkload() {
+export async function getWorkload(projectId?: number) {
   const db = await getDb();
   if (!db) return [];
-  const allUsers = await db.select({ id: users.id, name: users.name, email: users.email }).from(users);
+
+  let targetUsers: Array<{ id: number; name: string | null; email: string | null }>;
+  let boardIds: number[] | null = null;
+  if (projectId) {
+    const members = await getProjectMembers(projectId);
+    targetUsers = members.map((m) => ({ id: m.userId, name: m.name, email: m.email }));
+    const projectBoards = await db.select({ id: boards.id }).from(boards).where(eq(boards.projectId, projectId));
+    boardIds = projectBoards.map((b) => b.id);
+  } else {
+    targetUsers = await db.select({ id: users.id, name: users.name, email: users.email }).from(users);
+  }
+
   const result = await Promise.all(
-    allUsers.map(async (u) => {
+    targetUsers.map(async (u) => {
+      if (boardIds && !boardIds.length) {
+        return { user: u, todo: 0, in_progress: 0, in_review: 0, done: 0, total: 0 };
+      }
+      const assigneeTaskIds = await db
+        .select({ taskId: taskAssignees.taskId })
+        .from(taskAssignees)
+        .where(eq(taskAssignees.userId, u.id));
+      const fromJunction = assigneeTaskIds.map((r) => r.taskId);
+      const conditions = [
+        fromJunction.length
+          ? or(eq(tasks.assigneeId, u.id), inArray(tasks.id, fromJunction))!
+          : eq(tasks.assigneeId, u.id),
+      ];
+      if (boardIds) conditions.push(inArray(tasks.boardId, boardIds));
       const rows = await db
         .select({ status: tasks.status, count: sql<number>`count(*)` })
         .from(tasks)
-        .where(eq(tasks.assigneeId, u.id))
+        .where(and(...conditions))
         .groupBy(tasks.status);
       const counts = Object.fromEntries(rows.map((r) => [r.status, Number(r.count)]));
       return {
@@ -876,11 +1231,120 @@ export async function deleteKpiEntry(id: number) {
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-export async function getDashboardStats(userId: number) {
+export async function getDashboardStats(userId: number, isGlobalAdmin = false) {
   const db = await getDb();
   if (!db) return { totalProjects: 0, taskCounts: {} };
+  if (isGlobalAdmin) {
+    const list = await getProjects(userId, true);
+    const taskCounts = await getTaskCountsByStatus(userId, true);
+    return { totalProjects: list.length, taskCounts };
+  }
   const projectIds = await getProjectIdsForUser(userId);
   const totalProjects = projectIds.length;
   const taskCounts = await getTaskCountsByStatus(userId);
   return { totalProjects, taskCounts };
+}
+
+/** UTC calendar date as YYYY-MM-DD. */
+export function utcDateString(d = new Date()): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** Record at most one platform visit per user per UTC day. Safe to call on every request. */
+export async function recordPlatformVisit(userId: number, visitDate = utcDateString()): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .insert(platformVisits)
+      .values({ userId, visitDate })
+      .onDuplicateKeyUpdate({ set: { userId: sql`userId` } });
+  } catch (error) {
+    console.error("[Database] Failed to record platform visit:", error);
+  }
+}
+
+export async function getWeeklyAccessLog(days = 7) {
+  const db = await getDb();
+  const periodEnd = utcDateString();
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+  const periodStart = utcDateString(start);
+
+  if (!db) {
+    return {
+      periodStart,
+      periodEnd,
+      days,
+      uniqueUsers: 0,
+      totalVisits: 0,
+      byUser: [] as Array<{
+        userId: number;
+        name: string | null;
+        email: string | null;
+        visitDays: number;
+        lastVisit: string;
+      }>,
+      byDay: [] as Array<{ date: string; uniqueUsers: number }>,
+    };
+  }
+
+  const rows = await db
+    .select({
+      userId: platformVisits.userId,
+      visitDate: platformVisits.visitDate,
+      name: users.name,
+      email: users.email,
+    })
+    .from(platformVisits)
+    .innerJoin(users, eq(users.id, platformVisits.userId))
+    .where(and(gte(platformVisits.visitDate, periodStart), lte(platformVisits.visitDate, periodEnd)))
+    .orderBy(desc(platformVisits.visitDate));
+
+  const byUserMap = new Map<
+    number,
+    { userId: number; name: string | null; email: string | null; visitDays: number; lastVisit: string }
+  >();
+  const byDayMap = new Map<string, Set<number>>();
+
+  for (const row of rows) {
+    const existing = byUserMap.get(row.userId);
+    if (existing) {
+      existing.visitDays += 1;
+      if (row.visitDate > existing.lastVisit) existing.lastVisit = row.visitDate;
+    } else {
+      byUserMap.set(row.userId, {
+        userId: row.userId,
+        name: row.name,
+        email: row.email,
+        visitDays: 1,
+        lastVisit: row.visitDate,
+      });
+    }
+    let daySet = byDayMap.get(row.visitDate);
+    if (!daySet) {
+      daySet = new Set();
+      byDayMap.set(row.visitDate, daySet);
+    }
+    daySet.add(row.userId);
+  }
+
+  const byUser = Array.from(byUserMap.values()).sort((a, b) => b.visitDays - a.visitDays || a.userId - b.userId);
+  const byDay: Array<{ date: string; uniqueUsers: number }> = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start);
+    d.setUTCDate(start.getUTCDate() + i);
+    const date = utcDateString(d);
+    byDay.push({ date, uniqueUsers: byDayMap.get(date)?.size ?? 0 });
+  }
+
+  return {
+    periodStart,
+    periodEnd,
+    days,
+    uniqueUsers: byUser.length,
+    totalVisits: rows.length,
+    byUser,
+    byDay,
+  };
 }

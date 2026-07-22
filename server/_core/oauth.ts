@@ -2,14 +2,14 @@ import { randomBytes } from "crypto";
 import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
 import type { Express, Request, Response } from "express";
 import * as db from "../db";
-import { acceptPendingInvitesForEmail } from "../db";
+import { acceptPendingInvitesForEmail, getInviteByToken } from "../db";
 import { getSessionCookieOptions } from "./cookies";
 import { ENV, getOAuthRedirectUri, isOAuthConfigured } from "./env";
 import { sdk } from "./sdk";
 
 type OAuthProvider = "google" | "microsoft";
 
-const pendingStates = new Map<string, { provider: OAuthProvider; createdAt: number }>();
+const pendingStates = new Map<string, { provider: OAuthProvider; createdAt: number; returnTo?: string }>();
 
 function cleanupStates() {
   const cutoff = Date.now() - 10 * 60 * 1000;
@@ -18,18 +18,37 @@ function cleanupStates() {
   }
 }
 
-function createState(provider: OAuthProvider): string {
+function createState(provider: OAuthProvider, returnTo?: string): string {
   cleanupStates();
   const state = randomBytes(24).toString("hex");
-  pendingStates.set(state, { provider, createdAt: Date.now() });
+  pendingStates.set(state, { provider, createdAt: Date.now(), returnTo });
   return state;
 }
 
-function consumeState(state: string): OAuthProvider | null {
+function consumeState(state: string) {
   const entry = pendingStates.get(state);
   if (!entry) return null;
   pendingStates.delete(state);
-  return entry.provider;
+  return entry;
+}
+
+function safeReturnTo(returnTo?: string): string {
+  if (returnTo && returnTo.startsWith("/") && !returnTo.startsWith("//")) {
+    return returnTo;
+  }
+  return "/";
+}
+
+async function resolvePostLoginRedirect(returnTo?: string): Promise<string> {
+  const safe = safeReturnTo(returnTo);
+  const inviteMatch = safe.match(/^\/invite\/([A-Za-z0-9_-]+)$/);
+  if (!inviteMatch) return safe;
+
+  const invite = await getInviteByToken(inviteMatch[1]);
+  if (invite?.status === "accepted") {
+    return `/projects/${invite.projectId}`;
+  }
+  return safe;
 }
 
 async function exchangeGoogleCode(code: string, redirectUri: string) {
@@ -94,7 +113,7 @@ async function finishLogin(req: Request, res: Response, userInfo: {
   name: string | null;
   avatarUrl: string | null;
   loginMethod: string;
-}) {
+}, returnTo?: string) {
   await db.upsertUser({
     openId: userInfo.openId,
     name: userInfo.name,
@@ -102,6 +121,11 @@ async function finishLogin(req: Request, res: Response, userInfo: {
     loginMethod: userInfo.loginMethod,
     lastSignedIn: new Date(),
   });
+
+  const user = await db.getUserByOpenId(userInfo.openId);
+  if (user) {
+    void db.recordPlatformVisit(user.id);
+  }
 
   if (userInfo.email) {
     await acceptPendingInvitesForEmail(userInfo.email, userInfo.openId);
@@ -114,7 +138,8 @@ async function finishLogin(req: Request, res: Response, userInfo: {
 
   const cookieOptions = getSessionCookieOptions(req);
   res.cookie(COOKIE_NAME, sessionToken, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-  res.redirect(302, "/");
+  const redirectTo = await resolvePostLoginRedirect(returnTo);
+  res.redirect(302, redirectTo);
 }
 
 export function registerOAuthRoutes(app: Express) {
@@ -123,9 +148,10 @@ export function registerOAuthRoutes(app: Express) {
     return;
   }
 
-  app.get("/api/auth/google", (_req: Request, res: Response) => {
+  app.get("/api/auth/google", (req: Request, res: Response) => {
     const redirectUri = getOAuthRedirectUri("/api/auth/callback");
-    const state = createState("google");
+    const returnTo = typeof req.query.returnTo === "string" ? req.query.returnTo : undefined;
+    const state = createState("google", returnTo);
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     url.searchParams.set("client_id", ENV.googleClientId);
     url.searchParams.set("redirect_uri", redirectUri);
@@ -136,9 +162,10 @@ export function registerOAuthRoutes(app: Express) {
     res.redirect(url.toString());
   });
 
-  app.get("/api/auth/microsoft", (_req: Request, res: Response) => {
+  app.get("/api/auth/microsoft", (req: Request, res: Response) => {
     const redirectUri = getOAuthRedirectUri("/api/auth/callback");
-    const state = createState("microsoft");
+    const returnTo = typeof req.query.returnTo === "string" ? req.query.returnTo : undefined;
+    const state = createState("microsoft", returnTo);
     const url = new URL("https://login.microsoftonline.com/common/oauth2/v2.0/authorize");
     url.searchParams.set("client_id", ENV.microsoftClientId);
     url.searchParams.set("redirect_uri", redirectUri);
@@ -156,8 +183,8 @@ export function registerOAuthRoutes(app: Express) {
       return;
     }
 
-    const provider = consumeState(state);
-    if (!provider) {
+    const stateEntry = consumeState(state);
+    if (!stateEntry) {
       res.status(400).send("Invalid or expired state");
       return;
     }
@@ -165,10 +192,10 @@ export function registerOAuthRoutes(app: Express) {
     try {
       const redirectUri = getOAuthRedirectUri("/api/auth/callback");
       const userInfo =
-        provider === "google"
+        stateEntry.provider === "google"
           ? await exchangeGoogleCode(code, redirectUri)
           : await exchangeMicrosoftCode(code, redirectUri);
-      await finishLogin(req, res, userInfo);
+      await finishLogin(req, res, userInfo, stateEntry.returnTo);
     } catch (error) {
       console.error("[OAuth] Callback failed", error);
       res.status(500).send("Authentication failed");
