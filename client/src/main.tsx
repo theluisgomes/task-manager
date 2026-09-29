@@ -29,7 +29,17 @@ queryClient.getQueryCache().subscribe(event => {
   }
 });
 
+const LINKED_ROUTERS = new Set(["crm", "proposals", "projects", "finance", "calendar", "dashboard", "timesheets"]);
+
 queryClient.getMutationCache().subscribe(event => {
+  if (event.type === "updated" && event.action.type === "success") {
+    queryClient.invalidateQueries({
+      predicate: query => {
+        const path = query.queryKey[0];
+        return Array.isArray(path) && LINKED_ROUTERS.has(String(path[0]));
+      },
+    });
+  }
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
     redirectToLoginIfUnauthorized(error);

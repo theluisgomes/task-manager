@@ -32,10 +32,10 @@ function WorkloadBar({ done, inProgress, inReview, todo, total }: {
   if (total === 0) return <div className="h-1.5 w-full bg-muted rounded-full" />;
   return (
     <div className="h-1.5 w-full rounded-full overflow-hidden flex">
-      <div className="bg-emerald-500 transition-all" style={{ width: `${(done / total) * 100}%` }} />
-      <div className="bg-blue-500 transition-all" style={{ width: `${(inProgress / total) * 100}%` }} />
-      <div className="bg-amber-500 transition-all" style={{ width: `${(inReview / total) * 100}%` }} />
-      <div className="bg-slate-300 transition-all" style={{ width: `${(todo / total) * 100}%` }} />
+      <div className="bg-signal transition-all" style={{ width: `${(done / total) * 100}%` }} />
+      <div className="bg-data-6 transition-all" style={{ width: `${(inProgress / total) * 100}%` }} />
+      <div className="bg-data-3 transition-all" style={{ width: `${(inReview / total) * 100}%` }} />
+      <div className="bg-data-7 transition-all" style={{ width: `${(todo / total) * 100}%` }} />
     </div>
   );
 }
@@ -121,8 +121,8 @@ export default function Team() {
           </Card>
           <Card className="border-0 shadow-sm">
             <CardContent className="p-5 flex items-center gap-3">
-              <div className="h-9 w-9 rounded-xl bg-blue-50 flex items-center justify-center">
-                <Timer className="h-4 w-4 text-blue-600" />
+              <div className="h-9 w-9 rounded-xl bg-data-6/15 flex items-center justify-center">
+                <Timer className="h-4 w-4 text-data-6-ink" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Active</p>
@@ -132,8 +132,8 @@ export default function Team() {
           </Card>
           <Card className="border-0 shadow-sm">
             <CardContent className="p-5 flex items-center gap-3">
-              <div className="h-9 w-9 rounded-xl bg-emerald-50 flex items-center justify-center">
-                <BarChart3 className="h-4 w-4 text-emerald-600" />
+              <div className="h-9 w-9 rounded-xl bg-data-1/15 flex items-center justify-center">
+                <BarChart3 className="h-4 w-4 text-data-1-ink" />
               </div>
               <div>
                 <p className="text-xs text-muted-foreground uppercase tracking-wider">Tasks</p>
@@ -227,8 +227,9 @@ export default function Team() {
       <InviteMemberDialog
         open={showInvite}
         onClose={() => setShowInvite(false)}
-        projectId={projectIdNum > 0 ? projectIdNum : undefined}
+        allowBulk
         projects={projects ?? []}
+        initialProjectIds={projectIdNum > 0 ? [projectIdNum] : []}
         onSuccess={() => {
           if (projectIdNum) {
             utils.team.listInvites.invalidate({ projectId: projectIdNum });

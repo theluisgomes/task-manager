@@ -11,9 +11,23 @@ import BoardView from "./pages/BoardView";
 import Team from "./pages/Team";
 import Finance from "./pages/Finance";
 import CalendarPage from "./pages/Calendar";
+import HoursPage from "./pages/Hours";
 import Settings from "./pages/Settings";
 import InvitePage from "./pages/Invite";
 import Crm from "./pages/Crm";
+import Proposals from "./pages/Proposals";
+import { lazy, Suspense } from "react";
+import { Skeleton } from "@/components/ui/skeleton";
+
+const ProposalEditor = lazy(() => import("./pages/ProposalEditor"));
+
+function ProposalEditorRoute() {
+  return (
+    <Suspense fallback={<Skeleton className="m-6 h-[70vh]" />}>
+      <ProposalEditor />
+    </Suspense>
+  );
+}
 
 function AppRoutes() {
   return (
@@ -27,9 +41,13 @@ function AppRoutes() {
             <Route path="/projects/:projectId/board/:boardId" component={BoardView} />
             <Route path="/projects/:projectId" component={Projects} />
             <Route path="/crm" component={Crm} />
+            <Route path="/proposals" component={Proposals} />
+            <Route path="/proposals/new" component={ProposalEditorRoute} />
+            <Route path="/proposals/:id" component={ProposalEditorRoute} />
             <Route path="/team" component={Team} />
             <Route path="/finance" component={Finance} />
             <Route path="/calendar" component={CalendarPage} />
+            <Route path="/hours" component={HoursPage} />
             <Route path="/settings" component={Settings} />
             <Route path="/404" component={NotFound} />
             <Route component={NotFound} />

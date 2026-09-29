@@ -80,6 +80,7 @@ import {
   MessageSquare,
   Paperclip,
   Download,
+  FolderKanban,
   Lock,
   Settings,
 } from "lucide-react";
@@ -192,7 +193,7 @@ function TaskCard({
                   {task.title}
                 </p>
                 {isBlocked && (
-                  <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0 border-amber-500 text-amber-700" title="Blocked by incomplete dependencies">
+                  <Badge variant="outline" className="text-[9px] h-4 px-1 shrink-0 border-data-3 text-data-3-ink" title="Blocked by incomplete dependencies">
                     <AlertCircle className="h-2.5 w-2.5 mr-0.5" />Blocked
                   </Badge>
                 )}
@@ -266,8 +267,8 @@ function TaskCard({
                   {dueDateLabel && (
                     <span
                       className={`flex items-center gap-0.5 text-[10px] ${
-                        isOverdue ? "text-red-600 font-medium" :
-                        isDueSoon ? "text-amber-600" :
+                        isOverdue ? "text-destructive font-medium" :
+                        isDueSoon ? "text-data-3-ink" :
                         "text-muted-foreground"
                       }`}
                     >
@@ -344,7 +345,7 @@ function BoardColumn({
   const [newName, setNewName] = useState(column.name);
 
   const isDone = isDoneColumn(column.name);
-  const columnColor = column.color ?? "#e2e8f0";
+  const columnColor = column.color ?? "#E4DDD2";
 
   const { setNodeRef, isOver } = useSortable({
     id: `col-${column.id}`,
@@ -388,7 +389,7 @@ function BoardColumn({
             style={{ background: columnColor }}
           />
           {isDone && (
-            <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+            <CheckCircle2 className="h-3.5 w-3.5 text-data-1-ink shrink-0" />
           )}
           {isRenaming ? (
             <Input
@@ -473,7 +474,7 @@ function BoardColumn({
             onClick={() => onAddTask(column.id)}
           >
             <EmptyMedia variant="icon">
-              {isDone ? <CheckCircle2 className="text-emerald-500/70" /> : <Plus />}
+              {isDone ? <CheckCircle2 className="text-data-1-ink/70" /> : <Plus />}
             </EmptyMedia>
             <EmptyContent>
               <EmptyTitle className="text-sm">
@@ -960,6 +961,8 @@ export default function BoardView() {
   const currentUserRole = projectMembers?.find((m) => m.userId === user?.id)?.role;
   const canManage = canManageProject(currentUserRole, user?.role);
 
+  const openProject = () => setLocation(`/projects/${projectId}?tab=boards`);
+
   const assigneeUsers =
     board?.accessMode === "restricted"
       ? (boardMembers ?? []).map((m) => ({ id: m.userId, name: m.name }))
@@ -1146,7 +1149,7 @@ export default function BoardView() {
             <BreadcrumbSeparator />
             <BreadcrumbItem>
               <BreadcrumbLink asChild>
-                <button type="button" onClick={() => setLocation(`/projects/${projectId}`)}>
+                <button type="button" onClick={openProject}>
                   {project?.name ?? "Project"}
                 </button>
               </BreadcrumbLink>
@@ -1158,6 +1161,15 @@ export default function BoardView() {
           </BreadcrumbList>
         </Breadcrumb>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5 h-8 text-xs"
+            onClick={openProject}
+          >
+            <FolderKanban className="h-3.5 w-3.5" />
+            Detalhes
+          </Button>
           {board?.accessMode === "restricted" && (
             <Badge variant="secondary" className="text-[10px] gap-1">
               <Lock className="h-3 w-3" />
@@ -1340,7 +1352,7 @@ export default function BoardView() {
         description={board?.description ?? null}
         accessMode={board?.accessMode ?? "project"}
         canManage={canManage}
-        onDeleted={() => setLocation(`/projects/${projectId}`)}
+        onDeleted={() => setLocation(`/projects/${projectId}?tab=boards`)}
       />
     </div>
   );

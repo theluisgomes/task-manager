@@ -23,6 +23,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { format, isToday, isTomorrow, differenceInDays, parseISO } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { fmtBrl } from "@shared/billing";
+import { BRAND, foregroundOn } from "@/lib/brand";
 
 function StatCard({
   icon: Icon,
@@ -65,10 +66,10 @@ function DueDateLabel({ dueDate }: { dueDate: Date | null }) {
   const diff = differenceInDays(d, new Date());
   let label = format(d, "MMM d");
   let cls = "text-muted-foreground";
-  if (isToday(d)) { label = "Today"; cls = "text-orange-600 font-medium dark:text-orange-400"; }
-  else if (isTomorrow(d)) { label = "Tomorrow"; cls = "text-amber-600 dark:text-amber-400"; }
-  else if (diff < 0) { label = `${Math.abs(diff)}d overdue`; cls = "text-red-600 font-medium dark:text-red-400"; }
-  else if (diff <= 3) cls = "text-amber-600 dark:text-amber-400";
+  if (isToday(d)) { label = "Today"; cls = "text-data-3-ink font-medium"; }
+  else if (isTomorrow(d)) { label = "Tomorrow"; cls = "text-data-3-ink"; }
+  else if (diff < 0) { label = `${Math.abs(diff)}d overdue`; cls = "text-destructive font-medium"; }
+  else if (diff <= 3) cls = "text-data-3-ink";
   return (
     <span className={`flex items-center gap-1 text-xs ${cls}`}>
       <Calendar className="h-3 w-3" />
@@ -155,21 +156,21 @@ export default function Dashboard() {
               label="Total Tasks"
               value={totalTasks}
               sub={`${doneTasks} completed`}
-              color="bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-400"
+              color="bg-data-6/15 text-data-6-ink"
             />
             <StatCard
               icon={Timer}
               label="In Progress"
               value={inProgressTasks}
               sub="Active tasks"
-              color="bg-amber-50 text-amber-600 dark:bg-amber-950/50 dark:text-amber-400"
+              color="bg-data-3/15 text-data-3-ink"
             />
             <StatCard
               icon={CheckCircle2}
               label="Completed"
               value={doneTasks}
               sub={totalTasks > 0 ? `${Math.round((doneTasks / totalTasks) * 100)}% done` : "0% done"}
-              color="bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400"
+              color="bg-data-1/15 text-data-1-ink"
             />
           </>
         )}
@@ -190,16 +191,13 @@ export default function Dashboard() {
               <Card
                 key={row.id}
                 className="border-0 shadow-sm shrink-0 w-80 cursor-pointer hover:shadow-md transition-all"
-                onClick={() => {
-                  if (row.canonicalBoardId) setLocation(`/projects/${row.id}/board/${row.canonicalBoardId}`);
-                  else setLocation(`/projects/${row.id}`);
-                }}
+                onClick={() => setLocation(`/projects/${row.id}`)}
               >
                 <CardContent className="p-4 space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <p className="font-medium text-sm truncate">{row.name}</p>
                     {row.isBlocked && (
-                      <Badge variant="outline" className="text-[10px] border-amber-500 text-amber-700 shrink-0">
+                      <Badge variant="outline" className="text-[10px] border-data-3 text-data-3-ink shrink-0">
                         <AlertCircle className="h-2.5 w-2.5 mr-0.5" />Bloq.
                       </Badge>
                     )}
@@ -233,12 +231,12 @@ export default function Dashboard() {
       )}
 
       {user?.role === "admin" && alerts && alerts.length > 0 && (
-        <Card className="border-amber-200 bg-amber-50/30">
+        <Card className="border-data-3/40 bg-data-3/10">
           <CardContent className="p-4">
-            <p className="text-sm font-medium text-amber-900 mb-2">{alerts.length} alert{alerts.length !== 1 ? "s" : ""} require attention</p>
+            <p className="text-sm font-medium text-data-3-ink mb-2">{alerts.length} alert{alerts.length !== 1 ? "s" : ""} require attention</p>
             <div className="flex flex-wrap gap-2">
               {alerts.slice(0, 5).map((a, i) => (
-                <Badge key={i} variant="outline" className="text-xs border-amber-400">
+                <Badge key={i} variant="outline" className="text-xs border-data-3/60 text-data-3-ink">
                   {a.type.replace(/_/g, " ")}
                 </Badge>
               ))}
@@ -287,14 +285,14 @@ export default function Dashboard() {
                   label="Usuários ativos"
                   value={weeklyAccess?.uniqueUsers ?? 0}
                   sub="Com pelo menos 1 acesso"
-                  color="bg-sky-50 text-sky-600 dark:bg-sky-950/50 dark:text-sky-400"
+                  color="bg-data-6/15 text-data-6-ink"
                 />
                 <StatCard
                   icon={LogIn}
                   label="Acessos (dias)"
                   value={weeklyAccess?.totalVisits ?? 0}
                   sub="Total de dias-usuário"
-                  color="bg-violet-50 text-violet-600 dark:bg-violet-950/50 dark:text-violet-400"
+                  color="bg-data-5/15 text-data-5-ink"
                 />
                 <StatCard
                   icon={TrendingUp}
@@ -305,7 +303,7 @@ export default function Dashboard() {
                       : "0"
                   }
                   sub="Dias ativos na semana"
-                  color="bg-emerald-50 text-emerald-600 dark:bg-emerald-950/50 dark:text-emerald-400"
+                  color="bg-data-1/15 text-data-1-ink"
                 />
               </div>
 
@@ -323,7 +321,7 @@ export default function Dashboard() {
                           <div key={day.date} className="flex-1 flex flex-col items-center gap-1.5 min-w-0">
                             <div className="w-full flex items-end justify-center h-12">
                               <div
-                                className="w-full max-w-[28px] rounded-sm bg-primary/80"
+                                className="w-full max-w-[28px] rounded-sm bg-signal"
                                 style={{ height }}
                                 title={`${day.uniqueUsers} usuário${day.uniqueUsers === 1 ? "" : "s"}`}
                               />
@@ -429,8 +427,8 @@ export default function Dashboard() {
                   <CardContent className="p-4">
                     <div className="flex items-center gap-3">
                       <div
-                        className="h-9 w-9 rounded-xl flex items-center justify-center shrink-0 text-white text-sm font-semibold"
-                        style={{ background: project.color ?? "#6366f1" }}
+                        className="h-9 w-9 rounded-xl flex items-center justify-center shrink-0 text-sm font-semibold"
+                        style={{ background: project.color ?? BRAND.signal, color: foregroundOn(project.color ?? BRAND.signal) }}
                       >
                         {project.name.charAt(0).toUpperCase()}
                       </div>
@@ -443,10 +441,10 @@ export default function Dashboard() {
                             variant="secondary"
                             className={`text-[10px] h-4 px-1.5 shrink-0 ${
                               project.status === "active"
-                                ? "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/50 dark:text-emerald-400 dark:border-emerald-800"
+                                ? "bg-data-1/15 text-data-1-ink border-transparent"
                                 : project.status === "completed"
-                                ? "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/50 dark:text-blue-400 dark:border-blue-800"
-                                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                                ? "bg-data-6/15 text-data-6-ink border-transparent"
+                                : "bg-muted text-muted-foreground border-transparent"
                             }`}
                           >
                             {project.status}
@@ -496,7 +494,7 @@ export default function Dashboard() {
           ) : !overdueTasks.length && !upcomingOnly.length ? (
             <Card className="border-0 shadow-sm">
               <CardContent className="p-6 flex flex-col items-center text-center gap-2">
-                <CheckCircle2 className="h-8 w-8 text-emerald-500" />
+                <CheckCircle2 className="h-8 w-8 text-data-1-ink" />
                 <p className="text-sm font-medium">All clear!</p>
                 <p className="text-xs text-muted-foreground">No overdue or upcoming deadlines.</p>
               </CardContent>
@@ -505,17 +503,17 @@ export default function Dashboard() {
             <div className="space-y-3">
               {overdueTasks.length > 0 && (
                 <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-red-600 dark:text-red-400">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-destructive">
                     Atrasados ({overdueTasks.length})
                   </p>
                   {overdueTasks.slice(0, 8).map((task) => (
                     <Card
                       key={task.id}
-                      className="border-0 shadow-sm hover:shadow-md transition-all duration-200 border-l-2 border-l-red-500"
+                      className="border-0 shadow-sm hover:shadow-md transition-all duration-200 border-l-2 border-l-destructive"
                     >
                       <CardContent className="p-3">
                         <div className="flex items-start gap-2">
-                          <Circle className="h-3.5 w-3.5 mt-0.5 text-red-500 shrink-0" />
+                          <Circle className="h-3.5 w-3.5 mt-0.5 text-destructive shrink-0" />
                           <div className="flex-1 min-w-0">
                             <p className="text-xs font-medium truncate">{task.title}</p>
                             <div className="flex items-center gap-2 mt-1.5">
@@ -581,8 +579,8 @@ export default function Dashboard() {
           onClick={() => setLocation("/team")}
         >
           <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-10 w-10 rounded-xl bg-blue-50 dark:bg-blue-950/50 flex items-center justify-center">
-              <FolderKanban className="h-5 w-5 text-blue-600 dark:text-blue-400" />
+            <div className="h-10 w-10 rounded-xl bg-data-6/15 flex items-center justify-center">
+              <FolderKanban className="h-5 w-5 text-data-6-ink" />
             </div>
             <div>
               <p className="font-medium text-sm group-hover:text-primary transition-colors">Team Workload</p>
@@ -596,8 +594,8 @@ export default function Dashboard() {
           onClick={() => setLocation("/finance")}
         >
           <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-10 w-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 flex items-center justify-center">
-              <TrendingUp className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+            <div className="h-10 w-10 rounded-xl bg-data-3/15 flex items-center justify-center">
+              <TrendingUp className="h-5 w-5 text-data-3-ink" />
             </div>
             <div>
               <p className="font-medium text-sm group-hover:text-primary transition-colors">Finance KPI</p>

@@ -22,15 +22,22 @@ Decisões: CRM = página `/crm`; vista estratégica = board canônico (sem flatt
 | SPEC-12 | Painel NF/D+X/checkbox quitado | Done | Já existia no Faturamento do projeto |
 | SPEC-13 | E-mail vencimentos → Rodrigo | Done | `POST /api/cron/payment-reminders` + botão admin + log idempotente |
 | SPEC-14 | Seção CRM | Done | Página `/crm` com pipeline de leads |
+| — | Gerador de propostas comerciais | Done | `/proposals` + editor com preview PDF, integrado ao CRM (tabela `proposals`) |
+| SPEC-15 | Assistente de IA para propostas | Done | "Gerar com IA" + "Melhorar texto" via OpenRouter/Qwen3 (`proposals.aiDraft`/`aiRewrite`) |
 
 ## Migrations
 
 - `drizzle/0009_modo_completo.sql` — strategicPriority, task_assignees, user_employment_contracts, payment_reminder_log
+- `drizzle/0010_proposals.sql` — proposals
 
 ## Env novos
 
 - `PAYMENT_REMINDER_EMAIL` (default `rodrigo@wisemetrics.in`)
 - `CRON_SECRET` (Bearer / x-cron-secret para o endpoint cron)
+- `OPENROUTER_API_KEY` (sem chave, os botões de IA ficam desabilitados)
+- `OPENROUTER_MODEL` (default `qwen/qwen3-235b-a22b`)
+- `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1`)
+- `OPENROUTER_TIMEOUT_MS` (default `60000`)
 
 ## Como validar
 
@@ -44,3 +51,5 @@ Decisões: CRM = página `/crm`; vista estratégica = board canônico (sem flatt
 8. Finance → Contratos P&L + enviar lembretes
 9. `/crm` → pipeline de leads
 10. Agendar Cloud Scheduler: `POST /api/cron/payment-reminders` com `Authorization: Bearer $CRON_SECRET`
+11. `/proposals/new` → preencher → Baixar PDF; mudar status para "Enviada" move o lead no CRM
+12. Editor de proposta → "Gerar com IA" → revisar seções → Aplicar selecionadas → "Melhorar texto" em Apresentação/Escopo

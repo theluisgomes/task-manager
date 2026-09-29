@@ -74,7 +74,7 @@ export default function Settings() {
                 Signed in via {user?.loginMethod ?? "OAuth"}
               </p>
             </div>
-            <Badge variant="secondary" className="text-[10px] bg-emerald-50 text-emerald-700 border-emerald-200">
+            <Badge variant="secondary" className="text-[10px] bg-data-1/15 text-data-1-ink border-transparent">
               Active
             </Badge>
           </div>

@@ -1,6 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useState, useMemo, useRef, useEffect } from "react";
+import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -63,16 +64,17 @@ import {
 import { toast } from "sonner";
 import { getProjectAreaLabel } from "@shared/projectAreas";
 import { fmtBrl } from "@shared/billing";
+import { DATA_COLORS } from "@/lib/brand";
 
-const CHART_COLORS = [
-  "oklch(0.46 0.18 264)",
-  "oklch(0.60 0.15 230)",
-  "oklch(0.60 0.15 145)",
-  "oklch(0.72 0.15 75)",
-  "oklch(0.65 0.18 35)",
-];
+const PIE_COLORS = DATA_COLORS;
 
-const PIE_COLORS = ["#6366f1", "#22c55e", "#f59e0b", "#ef4444", "#14b8a6"];
+const chartTooltip = {
+  borderRadius: "8px",
+  border: "1px solid var(--border)",
+  background: "var(--card)",
+  color: "var(--foreground)",
+  fontSize: "12px",
+};
 
 function formatCurrency(value: number | string | null | undefined) {
   if (value == null) return "—";
@@ -119,7 +121,7 @@ function KpiStatCard({
             <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{label}</p>
             <p className="text-xl font-semibold mt-1 tracking-tight">{displayValue}</p>
             {change != null && (
-              <div className={`flex items-center gap-1 mt-1.5 text-xs font-medium ${isPositive ? "text-emerald-600" : "text-red-600"}`}>
+              <div className={`flex items-center gap-1 mt-1.5 text-xs font-medium ${isPositive ? "text-data-1-ink" : "text-destructive"}`}>
                 {isPositive ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                 {formatPercent(change)} vs prior period
               </div>
@@ -342,8 +344,8 @@ function RevenueTab({ entries, categories }: { entries: any[]; categories: any[]
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
         <KpiStatCard label="Actual Revenue" value={totalActual} icon={DollarSign} color="bg-primary/10 text-primary" />
-        <KpiStatCard label="Projected Revenue" value={totalProjected} icon={TrendingUp} color="bg-blue-50 text-blue-600" />
-        <KpiStatCard label="Budget" value={totalBudget} icon={BarChart3} color="bg-amber-50 text-amber-600" />
+        <KpiStatCard label="Projected Revenue" value={totalProjected} icon={TrendingUp} color="bg-data-6/15 text-data-6-ink" />
+        <KpiStatCard label="Budget" value={totalBudget} icon={BarChart3} color="bg-data-3/15 text-data-3-ink" />
       </div>
 
       {chartData.length > 0 ? (
@@ -356,22 +358,22 @@ function RevenueTab({ entries, categories }: { entries: any[]; categories: any[]
               <AreaChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                 <defs>
                   <linearGradient id="actualGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.15} />
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                    <stop offset="5%" stopColor="var(--wm-data-1)" stopOpacity={0.18} />
+                    <stop offset="95%" stopColor="var(--wm-data-1)" stopOpacity={0} />
                   </linearGradient>
                   <linearGradient id="projGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.1} />
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                    <stop offset="5%" stopColor="var(--wm-data-6)" stopOpacity={0.14} />
+                    <stop offset="95%" stopColor="var(--wm-data-6)" stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 240)" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="period" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: "8px", border: "1px solid oklch(0.91 0.005 240)", fontSize: "12px" }} />
+                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={chartTooltip} />
                 <Legend wrapperStyle={{ fontSize: "12px" }} />
-                <Area type="monotone" dataKey="actual" stroke="#6366f1" strokeWidth={2} fill="url(#actualGrad)" name="Actual" />
-                <Area type="monotone" dataKey="projected" stroke="#3b82f6" strokeWidth={2} strokeDasharray="5 5" fill="url(#projGrad)" name="Projected" />
-                <Line type="monotone" dataKey="budget" stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="3 3" dot={false} name="Budget" />
+                <Area type="monotone" dataKey="actual" stroke="var(--wm-data-1)" strokeWidth={2} fill="url(#actualGrad)" name="Actual" />
+                <Area type="monotone" dataKey="projected" stroke="var(--wm-data-6)" strokeWidth={2} strokeDasharray="5 5" fill="url(#projGrad)" name="Projected" />
+                <Line type="monotone" dataKey="budget" stroke="var(--wm-data-3)" strokeWidth={1.5} strokeDasharray="3 3" dot={false} name="Budget" />
               </AreaChart>
             </ResponsiveContainer>
           </CardContent>
@@ -410,8 +412,8 @@ function BudgetTab({ entries, categories }: { entries: any[]; categories: any[] 
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
         <KpiStatCard label="Actual Spend" value={totalActual} icon={DollarSign} color="bg-primary/10 text-primary" />
-        <KpiStatCard label="Total Budget" value={totalBudget} icon={BarChart3} color="bg-blue-50 text-blue-600" />
-        <KpiStatCard label="Utilization" value={utilization} icon={Percent} color="bg-amber-50 text-amber-600" format="percent" />
+        <KpiStatCard label="Total Budget" value={totalBudget} icon={BarChart3} color="bg-data-6/15 text-data-6-ink" />
+        <KpiStatCard label="Utilization" value={utilization} icon={Percent} color="bg-data-3/15 text-data-3-ink" format="percent" />
       </div>
 
       {chartData.length > 0 ? (
@@ -422,13 +424,13 @@ function BudgetTab({ entries, categories }: { entries: any[]; categories: any[] 
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 240)" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="name" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: "8px", border: "1px solid oklch(0.91 0.005 240)", fontSize: "12px" }} />
+                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={chartTooltip} />
                 <Legend wrapperStyle={{ fontSize: "12px" }} />
-                <Bar dataKey="budget" fill="#e0e7ff" name="Budget" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="actual" fill="#6366f1" name="Actual" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="budget" fill="var(--wm-data-7)" name="Budget" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="actual" fill="var(--wm-data-1)" name="Actual" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -475,13 +477,13 @@ function VarianceTab({ entries, categories }: { entries: any[]; categories: any[
           <CardContent>
             <ResponsiveContainer width="100%" height={260}>
               <BarChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 240)" vertical={false} />
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                 <XAxis dataKey="period" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: "8px", border: "1px solid oklch(0.91 0.005 240)", fontSize: "12px" }} />
+                <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={chartTooltip} />
                 <Legend wrapperStyle={{ fontSize: "12px" }} />
-                <Bar dataKey="actual" fill="#6366f1" name="Actual" radius={[4, 4, 0, 0]} />
-                <Bar dataKey="budget" fill="#e0e7ff" name="Budget" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="actual" fill="var(--wm-data-1)" name="Actual" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="budget" fill="var(--wm-data-7)" name="Budget" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -515,10 +517,10 @@ function VarianceTab({ entries, categories }: { entries: any[]; categories: any[
                     <TableCell className="text-sm">{row.category}</TableCell>
                     <TableCell className="text-sm text-right">{formatCurrency(row.actual)}</TableCell>
                     <TableCell className="text-sm text-right">{formatCurrency(row.budget)}</TableCell>
-                    <TableCell className={`text-sm text-right font-medium ${row.variance >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    <TableCell className={`text-sm text-right font-medium ${row.variance >= 0 ? "text-data-1-ink" : "text-destructive"}`}>
                       {row.variance >= 0 ? "+" : ""}{formatCurrency(row.variance)}
                     </TableCell>
-                    <TableCell className={`text-sm text-right font-medium ${row.variancePct >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                    <TableCell className={`text-sm text-right font-medium ${row.variancePct >= 0 ? "text-data-1-ink" : "text-destructive"}`}>
                       {formatPercent(row.variancePct)}
                     </TableCell>
                   </TableRow>
@@ -569,9 +571,9 @@ function ProfitabilityTab({ entries, categories }: { entries: any[]; categories:
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-3 gap-4">
-        <KpiStatCard label="Total Profit" value={totalProfit} icon={TrendingUp} color="bg-emerald-50 text-emerald-600" />
-        <KpiStatCard label="Revenue Base" value={totalRevenue} icon={DollarSign} color="bg-primary/10 text-primary" />
-        <KpiStatCard label="Profit Margin" value={margin} icon={Percent} color="bg-blue-50 text-blue-600" format="percent" />
+        <KpiStatCard label="Total Profit" value={totalProfit} icon={TrendingUp} color="bg-data-1/15 text-data-1-ink" />
+        <KpiStatCard label="Revenue Base" value={totalRevenue} icon={DollarSign} color="bg-data-6/15 text-data-6-ink" />
+        <KpiStatCard label="Profit Margin" value={margin} icon={Percent} color="bg-data-3/15 text-data-3-ink" format="percent" />
       </div>
 
       <div className="grid grid-cols-2 gap-6">
@@ -596,7 +598,7 @@ function ProfitabilityTab({ entries, categories }: { entries: any[]; categories:
                       <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: "8px", border: "1px solid oklch(0.91 0.005 240)", fontSize: "12px" }} />
+                  <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={chartTooltip} />
                   <Legend wrapperStyle={{ fontSize: "11px" }} />
                 </PieChart>
               </ResponsiveContainer>
@@ -614,10 +616,10 @@ function ProfitabilityTab({ entries, categories }: { entries: any[]; categories:
             <CardContent>
               <ResponsiveContainer width="100%" height={240}>
                 <LineChart data={lineData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.91 0.005 240)" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
                   <XAxis dataKey="period" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={{ borderRadius: "8px", border: "1px solid oklch(0.91 0.005 240)", fontSize: "12px" }} />
+                  <Tooltip formatter={(v: number) => formatCurrency(v)} contentStyle={chartTooltip} />
                   <Legend wrapperStyle={{ fontSize: "11px" }} />
                   {profitCategories.map((cat, i) => (
                     <Line
@@ -660,12 +662,12 @@ function OperationalSummaryTab() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <KpiStatCard label="Receita orçada" value={t.budgetedRevenue} icon={DollarSign} color="bg-primary/10 text-primary" />
-        <KpiStatCard label="Receita real" value={t.actualRevenue} icon={TrendingUp} color="bg-emerald-50 text-emerald-600" />
-        <KpiStatCard label="Custo orçado" value={t.budgetedCost} icon={BarChart3} color="bg-amber-50 text-amber-600" />
-        <KpiStatCard label="Custo real" value={t.actualCost} icon={Minus} color="bg-orange-50 text-orange-600" />
-        <KpiStatCard label="Lucro orçado" value={t.budgetedProfit} icon={Percent} color="bg-blue-50 text-blue-600" />
-        <KpiStatCard label="Lucro real" value={t.actualProfit} icon={TrendingUp} color="bg-violet-50 text-violet-600" />
+        <KpiStatCard label="Receita orçada" value={t.budgetedRevenue} icon={DollarSign} color="bg-data-1/15 text-data-1-ink" />
+        <KpiStatCard label="Receita real" value={t.actualRevenue} icon={TrendingUp} color="bg-data-6/15 text-data-6-ink" />
+        <KpiStatCard label="Custo orçado" value={t.budgetedCost} icon={BarChart3} color="bg-data-3/15 text-data-3-ink" />
+        <KpiStatCard label="Custo real" value={t.actualCost} icon={Minus} color="bg-data-4/15 text-data-4-ink" />
+        <KpiStatCard label="Lucro orçado" value={t.budgetedProfit} icon={Percent} color="bg-data-5/15 text-data-5-ink" />
+        <KpiStatCard label="Lucro real" value={t.actualProfit} icon={TrendingUp} color="bg-data-2/15 text-foreground" />
       </div>
     </div>
   );
@@ -738,6 +740,14 @@ function EditableMoneyCell({
 
 function ProjectsFinanceTab() {
   const { data, isLoading } = trpc.finance.summary.useQuery();
+  const { data: acceptedProposals } = trpc.proposals.list.useQuery({ status: "accepted" });
+  const proposalByProject = useMemo(() => {
+    const map = new Map<number, { id: number; number: string }>();
+    for (const { proposal } of acceptedProposals ?? []) {
+      if (proposal.projectId && !map.has(proposal.projectId)) map.set(proposal.projectId, proposal);
+    }
+    return map;
+  }, [acceptedProposals]);
   const utils = trpc.useUtils();
   const updateFinance = trpc.finance.updateProjectFinance.useMutation({
     onSuccess: () => {
@@ -760,12 +770,17 @@ function ProjectsFinanceTab() {
           <TableHead>Project</TableHead><TableHead>Area</TableHead>
           <TableHead>Rec. orçada</TableHead><TableHead>Rec. real</TableHead>
           <TableHead>Custo real</TableHead><TableHead>Lucro real</TableHead>
+          <TableHead>Origem</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {data?.projects.map((p) => (
           <TableRow key={p.projectId}>
-            <TableCell className="font-medium text-sm">{p.projectName}</TableCell>
+            <TableCell className="font-medium text-sm">
+              <Link href={`/projects/${p.projectId}?tab=faturamento`} className="hover:text-primary hover:underline">
+                {p.projectName}
+              </Link>
+            </TableCell>
             <TableCell className="text-sm">{getProjectAreaLabel(p.area as any)}</TableCell>
             <TableCell>
               <EditableMoneyCell
@@ -790,6 +805,18 @@ function ProjectsFinanceTab() {
             </TableCell>
             <TableCell className="text-sm tabular-nums font-medium">
               {fmtBrl(p.actualProfit)}
+            </TableCell>
+            <TableCell className="text-xs">
+              {proposalByProject.get(p.projectId) ? (
+                <Link
+                  href={`/proposals/${proposalByProject.get(p.projectId)!.id}`}
+                  className="text-primary hover:underline"
+                >
+                  {proposalByProject.get(p.projectId)!.number}
+                </Link>
+              ) : (
+                <span className="text-muted-foreground">—</span>
+              )}
             </TableCell>
           </TableRow>
         ))}
@@ -832,7 +859,13 @@ function ContractPlTab() {
           {(data?.contracts ?? []).map((c) => (
             <TableRow key={c.id}>
               <TableCell className="text-sm font-medium">{c.title}<div className="text-xs text-muted-foreground">{c.clientName}</div></TableCell>
-              <TableCell className="text-sm">{c.projectName ?? "—"}</TableCell>
+              <TableCell className="text-sm">
+                {c.projectId ? (
+                  <Link href={`/projects/${c.projectId}?tab=faturamento`} className="hover:text-primary hover:underline">
+                    {c.projectName ?? `Projeto #${c.projectId}`}
+                  </Link>
+                ) : "—"}
+              </TableCell>
               <TableCell className="text-sm">{fmtBrl(c.budgetedRevenue)}</TableCell>
               <TableCell className="text-sm">{fmtBrl(c.actualRevenue)}</TableCell>
               <TableCell className="text-sm">{fmtBrl(c.budgetedCost)}</TableCell>

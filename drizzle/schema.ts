@@ -9,7 +9,9 @@ import {
   boolean,
   date,
   unique,
+  json,
 } from "drizzle-orm/mysql-core";
+import type { ProposalInstallment, ProposalItem } from "../shared/proposals";
 import { PROJECT_AREA_IDS } from "../shared/projectAreas";
 
 export const users = mysqlTable("users", {
@@ -58,6 +60,7 @@ export const projects = mysqlTable("projects", {
     .default("normal")
     .notNull(),
   ownerId: int("ownerId").notNull(),
+  visibility: mysqlEnum("visibility", ["private", "shared"]).default("private").notNull(),
   leadId: int("leadId"),
   linkedProjectId: int("linkedProjectId"),
   contractId: int("contractId"),
@@ -160,6 +163,16 @@ export const activityLog = mysqlTable("activity_log", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
+export const teamInviteProjects = mysqlTable(
+  "team_invite_projects",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    inviteId: int("inviteId").notNull(),
+    projectId: int("projectId").notNull(),
+  },
+  (table) => [unique("team_invite_projects_invite_project").on(table.inviteId, table.projectId)]
+);
+
 export const teamInvites = mysqlTable("team_invites", {
   id: int("id").autoincrement().primaryKey(),
   email: varchar("email", { length: 320 }).notNull(),
@@ -189,17 +202,21 @@ export const taskDependencies = mysqlTable("task_dependencies", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export const timesheets = mysqlTable("timesheets", {
-  id: int("id").autoincrement().primaryKey(),
-  userId: int("userId").notNull(),
-  projectId: int("projectId").notNull(),
-  date: timestamp("date").notNull(),
-  hours: decimal("hours", { precision: 6, scale: 2 }).notNull(),
-  description: varchar("description", { length: 512 }),
-  hourlyRate: decimal("hourlyRate", { precision: 10, scale: 2 }),
-  createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-});
+export const timesheets = mysqlTable(
+  "timesheets",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    userId: int("userId").notNull(),
+    projectId: int("projectId").notNull(),
+    date: timestamp("date").notNull(),
+    hours: decimal("hours", { precision: 6, scale: 2 }).notNull(),
+    description: varchar("description", { length: 512 }),
+    hourlyRate: decimal("hourlyRate", { precision: 10, scale: 2 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => [unique("timesheets_user_project_date").on(table.userId, table.projectId, table.date)]
+);
 
 export const userContractAllocations = mysqlTable("user_contract_allocations", {
   id: int("id").autoincrement().primaryKey(),
@@ -302,6 +319,46 @@ export const contractPayments = mysqlTable("contract_payments", {
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
 
+export const proposals = mysqlTable("proposals", {
+  id: int("id").autoincrement().primaryKey(),
+  number: varchar("number", { length: 32 }).notNull(),
+  leadId: int("leadId"),
+  projectId: int("projectId"),
+  clientName: varchar("clientName", { length: 255 }).notNull(),
+  contactName: varchar("contactName", { length: 255 }),
+  contactEmail: varchar("contactEmail", { length: 320 }),
+  title: varchar("title", { length: 255 }).notNull(),
+  intro: text("intro"),
+  scope: text("scope"),
+  items: json("items").$type<ProposalItem[]>().notNull(),
+  discount: decimal("discount", { precision: 18, scale: 2 }).default("0").notNull(),
+  total: decimal("total", { precision: 18, scale: 2 }).default("0").notNull(),
+  paymentTerms: text("paymentTerms"),
+  installments: json("installments").$type<ProposalInstallment[]>(),
+  deliveryTime: varchar("deliveryTime", { length: 255 }),
+  validUntil: timestamp("validUntil"),
+  notes: text("notes"),
+  status: mysqlEnum("status", ["draft", "sent", "accepted", "rejected"]).default("draft").notNull(),
+  createdById: int("createdById").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const calendarEvents = mysqlTable("calendar_events", {
+  id: int("id").autoincrement().primaryKey(),
+  contractId: int("contractId").notNull(),
+  projectId: int("projectId"),
+  title: varchar("title", { length: 255 }).notNull(),
+  description: text("description"),
+  startAt: timestamp("startAt").notNull(),
+  endAt: timestamp("endAt"),
+  allDay: boolean("allDay").default(true).notNull(),
+  kind: mysqlEnum("kind", ["reuniao", "entrega", "marco", "outro"]).default("outro").notNull(),
+  createdById: int("createdById").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
 export const alertSettings = mysqlTable("alert_settings", {
   id: int("id").autoincrement().primaryKey(),
   type: mysqlEnum("type", ["payment_due", "delivery_due", "hot_lead"]).notNull(),
@@ -359,3 +416,5 @@ export type Lead = typeof leads.$inferSelect;
 export type Contract = typeof contracts.$inferSelect;
 export type ContractPayment = typeof contractPayments.$inferSelect;
 export type AlertSetting = typeof alertSettings.$inferSelect;
+export type Proposal = typeof proposals.$inferSelect;
+export type CalendarEvent = typeof calendarEvents.$inferSelect;

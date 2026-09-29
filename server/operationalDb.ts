@@ -2,13 +2,22 @@ import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import { computeDueDateFromInput, formatLocalDate, parseLocalDate } from "../shared/billing";
 import { hasMinRole } from "../shared/roles";
 import {
+  nextProposalNumber,
+  proposalTotal,
+  type ProposalInstallment,
+  type ProposalItem,
+  type ProposalStatus,
+} from "../shared/proposals";
+import {
   alertSettings,
   boards,
+  calendarEvents,
   contractPayments,
   contracts,
   leads,
   paymentReminderLog,
   projectMembers,
+  proposals,
   projects,
   taskAssignees,
   taskDependencies,
@@ -208,6 +217,85 @@ export async function getProjectHoursSummary(projectIds: number[]) {
     .where(and(inArray(timesheets.projectId, projectIds), gte(timesheets.date, start)))
     .groupBy(timesheets.projectId);
   return Object.fromEntries(rows.map((r) => [r.projectId, parseDecimal(r.total)]));
+}
+
+function workDateBounds(date: string) {
+  const [year, month, day] = date.split("-").map(Number);
+  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
+  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
+  return { start, end, noon: new Date(year, month - 1, day, 12, 0, 0, 0) };
+}
+
+function formatWorkDate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+export async function getMyWeekTimesheet(userId: number, weekStart: string, weekEnd: string) {
+  const db = await getDb();
+  if (!db) return { projects: [], cells: {} as Record<string, number> };
+  const memberships = await db
+    .select({ id: projects.id, name: projects.name, color: projects.color })
+    .from(projectMembers)
+    .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+    .where(and(eq(projectMembers.userId, userId), eq(projects.status, "active")))
+    .orderBy(projects.name);
+  const start = workDateBounds(weekStart).start;
+  const end = workDateBounds(weekEnd).end;
+  const rows = memberships.length
+    ? await db
+        .select()
+        .from(timesheets)
+        .where(and(
+          eq(timesheets.userId, userId),
+          inArray(timesheets.projectId, memberships.map((m) => m.id)),
+          gte(timesheets.date, start),
+          lte(timesheets.date, end),
+        ))
+    : [];
+  const cells: Record<string, number> = {};
+  for (const row of rows) {
+    const key = `${row.projectId}:${formatWorkDate(row.date)}`;
+    cells[key] = (cells[key] ?? 0) + parseDecimal(row.hours);
+  }
+  return { projects: memberships, cells };
+}
+
+export async function upsertMyTimesheet(userId: number, projectId: number, date: string, hours: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  const { start, end, noon } = workDateBounds(date);
+  const existing = await db
+    .select({ id: timesheets.id })
+    .from(timesheets)
+    .where(and(
+      eq(timesheets.userId, userId),
+      eq(timesheets.projectId, projectId),
+      gte(timesheets.date, start),
+      lte(timesheets.date, end),
+    ));
+  if (hours <= 0) {
+    if (existing.length) {
+      await db.delete(timesheets).where(inArray(timesheets.id, existing.map((row) => row.id)));
+    }
+    return { hours: 0 };
+  }
+  if (existing.length > 1) {
+    await db.delete(timesheets).where(inArray(timesheets.id, existing.map((row) => row.id)));
+  }
+  if (existing.length === 1) {
+    await db.update(timesheets).set({ hours: hours.toString(), date: noon }).where(eq(timesheets.id, existing[0].id));
+    return { hours };
+  }
+  await db.insert(timesheets).values({
+    userId,
+    projectId,
+    date: noon,
+    hours: hours.toString(),
+  });
+  return { hours };
 }
 
 // ─── Allocations ──────────────────────────────────────────────────────────────
@@ -593,24 +681,37 @@ export async function getTeamUtilization(userId: number, isAdmin: boolean) {
   }));
 }
 
+export type CalendarEventType =
+  | "payment"
+  | "task"
+  | "lead_close"
+  | "proposal_valid"
+  | "contract_start"
+  | "contract_end"
+  | "contract_event";
+
 export async function getCalendarEvents(userId: number, isAdmin: boolean, start: Date, end: Date) {
   const db = await getDb();
   if (!db) return [];
-  const projectIds = await getProjectIdsForUser(userId, isAdmin);
-  if (!projectIds.length) return [];
-  const managedProjectIds = await getManagedProjectIds(userId);
-  const projectRows = await db.select().from(projects).where(inArray(projects.id, projectIds));
-  const projectsById = new Map(projectRows.map((p) => [p.id, p]));
+  const inRange = (d: Date | null | undefined): d is Date => d != null && d >= start && d <= end;
   const events: Array<{
     id: string;
-    type: "payment" | "task";
+    type: CalendarEventType;
     title: string;
     date: Date;
+    endDate?: Date | null;
+    description?: string | null;
     projectId?: number;
     projectName?: string;
     amount?: number;
     paymentId?: number;
     taskId?: number;
+    leadId?: number;
+    proposalId?: number;
+    contractId?: number;
+    calendarEventId?: number;
+    kind?: "reuniao" | "entrega" | "marco" | "outro";
+    allDay?: boolean;
     dueType?: "fixed" | "relative";
     baseEventType?: "assinatura" | "entrega" | null;
     daysAfterBase?: number | null;
@@ -619,7 +720,82 @@ export async function getCalendarEvents(userId: number, isAdmin: boolean, start:
     paymentReceived?: boolean;
     canManagePayment?: boolean;
   }> = [];
+
+  const openLeads = (await listAllLeads(userId, isAdmin)).filter(
+    ({ lead }) => lead.status !== "won" && lead.status !== "lost" && inRange(lead.expectedCloseDate)
+  );
+  for (const { lead, projectName } of openLeads) {
+    events.push({
+      id: `lead-${lead.id}`,
+      type: "lead_close",
+      title: `Fechamento previsto: ${lead.clientName} · ${lead.title}`,
+      date: lead.expectedCloseDate!,
+      leadId: lead.id,
+      projectId: lead.projectId ?? undefined,
+      projectName: projectName ?? undefined,
+    });
+  }
+
+  const sentProposals = await listProposals(userId, isAdmin, { status: "sent" });
+  for (const { proposal } of sentProposals) {
+    if (!inRange(proposal.validUntil)) continue;
+    events.push({
+      id: `proposal-${proposal.id}`,
+      type: "proposal_valid",
+      title: `Validade da proposta ${proposal.number}: ${proposal.clientName}`,
+      date: proposal.validUntil,
+      proposalId: proposal.id,
+      leadId: proposal.leadId ?? undefined,
+      projectId: proposal.projectId ?? undefined,
+    });
+  }
+
+  const projectIds = await getProjectIdsForUser(userId, isAdmin);
+  if (!projectIds.length) return events.sort((a, b) => a.date.getTime() - b.date.getTime());
+  const managedProjectIds = await getManagedProjectIds(userId);
+  const projectRows = await db.select().from(projects).where(inArray(projects.id, projectIds));
+  const projectsById = new Map(projectRows.map((p) => [p.id, p]));
   const projectContracts = await db.select().from(contracts).where(inArray(contracts.projectId, projectIds));
+  const contractsById = new Map(projectContracts.map((c) => [c.id, c]));
+  for (const contract of projectContracts) {
+    if (contract.status === "cancelled") continue;
+    const projectName = contract.projectId ? projectsById.get(contract.projectId)?.name : undefined;
+    const base = { contractId: contract.id, projectId: contract.projectId ?? undefined, projectName };
+    if (inRange(contract.startDate)) {
+      events.push({ ...base, id: `contract-start-${contract.id}`, type: "contract_start", title: `Início do contrato: ${contract.title}`, date: contract.startDate });
+    }
+    if (inRange(contract.endDate)) {
+      events.push({ ...base, id: `contract-end-${contract.id}`, type: "contract_end", title: `Fim do contrato: ${contract.title}`, date: contract.endDate });
+    }
+  }
+  if (contractsById.size) {
+    const manual = await db
+      .select()
+      .from(calendarEvents)
+      .where(and(
+        inArray(calendarEvents.contractId, Array.from(contractsById.keys())),
+        lte(calendarEvents.startAt, end),
+        or(gte(calendarEvents.startAt, start), gte(calendarEvents.endAt, start))
+      ));
+    for (const ev of manual) {
+      const contract = contractsById.get(ev.contractId);
+      const projectId = ev.projectId ?? contract?.projectId ?? undefined;
+      events.push({
+        id: `event-${ev.id}`,
+        type: "contract_event",
+        title: ev.title,
+        description: ev.description,
+        date: ev.startAt,
+        endDate: ev.endAt,
+        allDay: ev.allDay,
+        kind: ev.kind,
+        calendarEventId: ev.id,
+        contractId: ev.contractId,
+        projectId,
+        projectName: projectId ? projectsById.get(projectId)?.name : undefined,
+      });
+    }
+  }
   const contractIds = projectContracts.map((c) => c.id);
   const allPayments = contractIds.length
     ? await db.select().from(contractPayments).where(inArray(contractPayments.contractId, contractIds)).orderBy(contractPayments.dueDate)
@@ -679,6 +855,86 @@ export async function getCalendarEvents(userId: number, isAdmin: boolean, start:
     }
   }
   return events.sort((a, b) => a.date.getTime() - b.date.getTime());
+}
+
+// ─── Calendar events (manual, per contract) ───────────────────────────────────
+
+export type CalendarEventInput = {
+  title: string;
+  description?: string | null;
+  startAt: string;
+  endAt?: string | null;
+  allDay?: boolean;
+  kind?: "reuniao" | "entrega" | "marco" | "outro";
+};
+
+function calendarEventValues(data: CalendarEventInput) {
+  return {
+    title: data.title,
+    description: data.description ?? null,
+    startAt: data.allDay === false ? new Date(data.startAt) : parseLocalDate(data.startAt),
+    endAt: data.endAt ? (data.allDay === false ? new Date(data.endAt) : parseLocalDate(data.endAt)) : null,
+    allDay: data.allDay ?? true,
+    kind: data.kind ?? "outro",
+  };
+}
+
+export async function getContractById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db.select().from(contracts).where(eq(contracts.id, id)).limit(1);
+  return row;
+}
+
+export async function getCalendarEventById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db.select().from(calendarEvents).where(eq(calendarEvents.id, id)).limit(1);
+  return row;
+}
+
+export async function listCalendarEventsByContract(contractId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select().from(calendarEvents).where(eq(calendarEvents.contractId, contractId)).orderBy(calendarEvents.startAt);
+}
+
+export async function createCalendarEvent(data: CalendarEventInput & { contractId: number; projectId: number | null; createdById: number }) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  const result = await db.insert(calendarEvents).values({
+    ...calendarEventValues(data),
+    contractId: data.contractId,
+    projectId: data.projectId,
+    createdById: data.createdById,
+  });
+  return result[0].insertId;
+}
+
+export async function updateCalendarEvent(id: number, data: CalendarEventInput) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.update(calendarEvents).set(calendarEventValues(data)).where(eq(calendarEvents.id, id));
+}
+
+export async function deleteCalendarEvent(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.delete(calendarEvents).where(eq(calendarEvents.id, id));
+}
+
+/** Contracts the user can attach calendar events to, labelled with their project. */
+export async function listContractsForUser(userId: number, isAdmin: boolean) {
+  const db = await getDb();
+  if (!db) return [];
+  const projectIds = await getProjectIdsForUser(userId, isAdmin);
+  if (!projectIds.length) return [];
+  return db
+    .select({ id: contracts.id, title: contracts.title, clientName: contracts.clientName, status: contracts.status, projectId: contracts.projectId, projectName: projects.name })
+    .from(contracts)
+    .leftJoin(projects, eq(contracts.projectId, projects.id))
+    .where(inArray(contracts.projectId, projectIds))
+    .orderBy(projects.name);
 }
 
 export async function getAlertSettings() {
@@ -979,42 +1235,27 @@ export async function getContractPlReport(userId: number, isAdmin: boolean) {
 export async function listAllLeads(userId: number, isAdmin: boolean) {
   const db = await getDb();
   if (!db) return [];
-  if (isAdmin) {
-    return db
-      .select({
-        lead: leads,
-        projectName: projects.name,
-        responsibleName: users.name,
-      })
-      .from(leads)
-      .leftJoin(projects, eq(leads.projectId, projects.id))
-      .leftJoin(users, eq(leads.responsibleId, users.id))
-      .orderBy(desc(leads.updatedAt));
-  }
-  const projectIds = await getProjectIdsForUser(userId, false);
-  if (!projectIds.length) {
-    return db
-      .select({
-        lead: leads,
-        projectName: projects.name,
-        responsibleName: users.name,
-      })
-      .from(leads)
-      .leftJoin(projects, eq(leads.projectId, projects.id))
-      .leftJoin(users, eq(leads.responsibleId, users.id))
-      .where(eq(leads.createdById, userId))
-      .orderBy(desc(leads.updatedAt));
+  let scope;
+  if (!isAdmin) {
+    const projectIds = await getProjectIdsForUser(userId, false);
+    scope = projectIds.length
+      ? or(inArray(leads.projectId, projectIds), eq(leads.createdById, userId))
+      : eq(leads.createdById, userId);
   }
   return db
     .select({
       lead: leads,
       projectName: projects.name,
       responsibleName: users.name,
+      contractId: contracts.id,
+      contractStatus: contracts.status,
+      contractValue: contracts.totalValue,
     })
     .from(leads)
     .leftJoin(projects, eq(leads.projectId, projects.id))
+    .leftJoin(contracts, eq(projects.contractId, contracts.id))
     .leftJoin(users, eq(leads.responsibleId, users.id))
-    .where(or(inArray(leads.projectId, projectIds), eq(leads.createdById, userId)))
+    .where(scope)
     .orderBy(desc(leads.updatedAt));
 }
 
@@ -1279,6 +1520,125 @@ export async function sendPaymentDueReminders() {
     }
   }
   return { sent, skipped, to };
+}
+
+// ─── Proposals ────────────────────────────────────────────────────────────────
+
+export type ProposalInput = {
+  leadId?: number | null;
+  projectId?: number | null;
+  clientName: string;
+  contactName?: string | null;
+  contactEmail?: string | null;
+  title: string;
+  intro?: string | null;
+  scope?: string | null;
+  items: ProposalItem[];
+  discount?: number;
+  paymentTerms?: string | null;
+  installments?: ProposalInstallment[] | null;
+  deliveryTime?: string | null;
+  validUntil?: string | null;
+  notes?: string | null;
+};
+
+function proposalValues(data: ProposalInput) {
+  const discount = data.discount ?? 0;
+  return {
+    leadId: data.leadId ?? null,
+    projectId: data.projectId ?? null,
+    clientName: data.clientName,
+    contactName: data.contactName ?? null,
+    contactEmail: data.contactEmail ?? null,
+    title: data.title,
+    intro: data.intro ?? null,
+    scope: data.scope ?? null,
+    items: data.items,
+    discount: discount.toFixed(2),
+    total: proposalTotal(data.items, discount).toFixed(2),
+    paymentTerms: data.paymentTerms ?? null,
+    installments: data.installments?.length ? data.installments : null,
+    deliveryTime: data.deliveryTime ?? null,
+    validUntil: data.validUntil ? parseLocalDate(data.validUntil) : null,
+    notes: data.notes ?? null,
+  };
+}
+
+export async function listProposals(
+  userId: number,
+  isAdmin: boolean,
+  filters: { leadId?: number; status?: ProposalStatus } = {}
+) {
+  const db = await getDb();
+  if (!db) return [];
+  const conditions = [];
+  if (!isAdmin) {
+    const projectIds = await getProjectIdsForUser(userId, false);
+    conditions.push(
+      projectIds.length
+        ? or(eq(proposals.createdById, userId), inArray(proposals.projectId, projectIds))
+        : eq(proposals.createdById, userId)
+    );
+  }
+  if (filters.leadId) conditions.push(eq(proposals.leadId, filters.leadId));
+  if (filters.status) conditions.push(eq(proposals.status, filters.status));
+  return db
+    .select({ proposal: proposals, leadTitle: leads.title, projectName: projects.name })
+    .from(proposals)
+    .leftJoin(leads, eq(proposals.leadId, leads.id))
+    .leftJoin(projects, eq(proposals.projectId, projects.id))
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(desc(proposals.updatedAt));
+}
+
+export async function getProposal(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const [row] = await db.select().from(proposals).where(eq(proposals.id, id)).limit(1);
+  return row;
+}
+
+export async function createProposal(data: ProposalInput & { createdById: number }) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  const year = new Date().getFullYear();
+  const existing = await db
+    .select({ number: proposals.number })
+    .from(proposals)
+    .where(sql`${proposals.number} LIKE ${`PROP-${year}-%`}`);
+  const result = await db.insert(proposals).values({
+    ...proposalValues(data),
+    number: nextProposalNumber(existing.map((r) => r.number), year),
+    createdById: data.createdById,
+  });
+  return result[0].insertId;
+}
+
+export async function updateProposal(id: number, data: ProposalInput) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.update(proposals).set(proposalValues(data)).where(eq(proposals.id, id));
+}
+
+export async function setProposalStatus(id: number, status: ProposalStatus) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.update(proposals).set({ status }).where(eq(proposals.id, id));
+}
+
+export async function deleteProposal(id: number) {
+  const db = await getDb();
+  if (!db) throw new Error("DB unavailable");
+  await db.delete(proposals).where(eq(proposals.id, id));
+}
+
+export async function countProposalsByLead(userId: number, isAdmin: boolean) {
+  const rows = await listProposals(userId, isAdmin);
+  const counts: Record<number, number> = {};
+  for (const { proposal } of rows) {
+    if (proposal.leadId) counts[proposal.leadId] = (counts[proposal.leadId] ?? 0) + 1;
+  }
+  return counts;
 }
 
 function format(d: Date, pattern: string): string {

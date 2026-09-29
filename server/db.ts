@@ -16,6 +16,7 @@ import {
   taskAssignees,
   taskComments,
   tasks,
+  teamInviteProjects,
   teamInvites,
   userPreferences,
   users,
@@ -23,7 +24,7 @@ import {
   type ProjectRole,
 } from "../drizzle/schema";
 import { isBillableProjectArea } from "../shared/projectAreas";
-import { hasMinRole } from "../shared/roles";
+import { canDeleteProject, hasMinRole } from "../shared/roles";
 import { ENV } from "./_core/env";
 import { forbidden, notFound } from "./authz";
 
@@ -263,6 +264,90 @@ export async function updateUserPreferences(
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 
+export async function annotateProjectList<T extends { id: number; ownerId: number; visibility?: "private" | "shared" }>(
+  rows: T[],
+  userId: number,
+  isGlobalAdmin = false
+): Promise<Array<T & { accessibleBoardCount: number; soleBoardId: number | null; canDelete: boolean }>> {
+  if (!rows.length) return [];
+  const db = await getDb();
+  const empty = rows.map((row) => ({
+    ...row,
+    accessibleBoardCount: 0,
+    soleBoardId: null,
+    canDelete: canDeleteProject({
+      userId,
+      globalRole: isGlobalAdmin ? "admin" : "user",
+      ownerId: row.ownerId,
+      memberRole: row.ownerId === userId ? "owner" : null,
+      visibility: row.visibility ?? "private",
+    }),
+  }));
+  if (!db) return empty;
+
+  const ids = rows.map((row) => row.id);
+  const allBoards = await db
+    .select({
+      id: boards.id,
+      projectId: boards.projectId,
+      accessMode: boards.accessMode,
+    })
+    .from(boards)
+    .where(inArray(boards.projectId, ids))
+    .orderBy(boards.createdAt);
+
+  const user = await getUserById(userId);
+  const seeAll = isGlobalAdmin || user?.role === "admin";
+  const memberships = await db
+    .select({ projectId: projectMembers.projectId, role: projectMembers.role })
+    .from(projectMembers)
+    .where(and(eq(projectMembers.userId, userId), inArray(projectMembers.projectId, ids)));
+  const roleByProject = new Map(memberships.map((m) => [m.projectId, m.role]));
+
+  let allowedRestricted = new Set<number>();
+  if (!seeAll) {
+    const restrictedIds = allBoards.filter((b) => b.accessMode === "restricted").map((b) => b.id);
+    if (restrictedIds.length) {
+      const memberRows = await db
+        .select({ boardId: boardMembers.boardId })
+        .from(boardMembers)
+        .where(and(eq(boardMembers.userId, userId), inArray(boardMembers.boardId, restrictedIds)));
+      allowedRestricted = new Set(memberRows.map((r) => r.boardId));
+    }
+  }
+
+  const boardIdsByProject = new Map<number, number[]>();
+  for (const board of allBoards) {
+    if (!seeAll) {
+      const role = roleByProject.get(board.projectId);
+      if (!role) continue;
+      if (!hasMinRole(role, "admin") && board.accessMode === "restricted" && !allowedRestricted.has(board.id)) {
+        continue;
+      }
+    }
+    const list = boardIdsByProject.get(board.projectId) ?? [];
+    list.push(board.id);
+    boardIdsByProject.set(board.projectId, list);
+  }
+
+  return rows.map((row) => {
+    const accessible = boardIdsByProject.get(row.id) ?? [];
+    const memberRole = roleByProject.get(row.id) ?? null;
+    return {
+      ...row,
+      accessibleBoardCount: accessible.length,
+      soleBoardId: accessible.length === 1 ? accessible[0] : null,
+      canDelete: canDeleteProject({
+        userId,
+        globalRole: user?.role,
+        ownerId: row.ownerId,
+        memberRole,
+        visibility: row.visibility ?? "private",
+      }),
+    };
+  });
+}
+
 export async function getProjects(userId: number, isGlobalAdmin = false) {
   const db = await getDb();
   if (!db) return [];
@@ -298,6 +383,7 @@ export async function createProject(data: {
   strategicPriority?: "normal" | "high" | "very_high";
   acquisitionOwnerId?: number;
   ownerId: number;
+  visibility?: "private" | "shared";
 }) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
@@ -310,6 +396,7 @@ export async function createProject(data: {
     acquisitionOwnerId: data.acquisitionOwnerId ?? null,
     ownerId: data.ownerId,
     status: "active",
+    visibility: data.visibility ?? "private",
   });
   const projectId = result[0].insertId;
   await db.insert(projectMembers).values({
@@ -331,10 +418,51 @@ export async function updateProject(id: number, data: Partial<{
   strategicPriority: "normal" | "high" | "very_high";
   linkedProjectId: number | null;
   acquisitionOwnerId: number | null;
+  visibility: "private" | "shared";
 }>) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   await db.update(projects).set(data).where(eq(projects.id, id));
+}
+
+export async function projectHasExternalAccess(projectId: number): Promise<boolean> {
+  const db = await getDb();
+  if (!db) return false;
+  const project = await getProjectById(projectId);
+  if (!project) return false;
+  const [otherMember] = await db
+    .select({ id: projectMembers.id })
+    .from(projectMembers)
+    .where(and(eq(projectMembers.projectId, projectId), ne(projectMembers.userId, project.ownerId)))
+    .limit(1);
+  if (otherMember) return true;
+  const [otherBoard] = await db
+    .select({ id: boardMembers.id })
+    .from(boardMembers)
+    .innerJoin(boards, eq(boardMembers.boardId, boards.id))
+    .where(and(eq(boards.projectId, projectId), ne(boardMembers.userId, project.ownerId)))
+    .limit(1);
+  return !!otherBoard;
+}
+
+async function shareProjectIfCollaborative(projectId: number) {
+  const db = await getDb();
+  if (!db) return;
+  const project = await getProjectById(projectId);
+  if (!project || project.visibility === "shared") return;
+  if (await projectHasExternalAccess(projectId)) {
+    await db.update(projects).set({ visibility: "shared" }).where(eq(projects.id, projectId));
+  }
+}
+
+async function privatizeProjectIfSolo(projectId: number) {
+  const db = await getDb();
+  if (!db) return;
+  const project = await getProjectById(projectId);
+  if (!project || project.visibility === "private") return;
+  if (!(await projectHasExternalAccess(projectId))) {
+    await db.update(projects).set({ visibility: "private" }).where(eq(projects.id, projectId));
+  }
 }
 
 export async function deleteProject(id: number) {
@@ -380,6 +508,7 @@ export async function addProjectMember(projectId: number, userId: number, role: 
     .limit(1);
   if (existing) return;
   await db.insert(projectMembers).values({ projectId, userId, role });
+  await shareProjectIfCollaborative(projectId);
 }
 
 /** Grant a user access to every project (used for local dev login against a shared DB). */
@@ -402,6 +531,7 @@ export async function removeProjectMember(projectId: number, userId: number) {
     .limit(1);
   if (member?.role === "owner") throw new Error("Cannot remove project owner");
   await db.delete(projectMembers).where(and(eq(projectMembers.projectId, projectId), eq(projectMembers.userId, userId)));
+  await privatizeProjectIfSolo(projectId);
 }
 
 export async function updateProjectMemberRole(projectId: number, userId: number, role: ProjectRole) {
@@ -508,12 +638,16 @@ export async function addBoardMember(boardId: number, userId: number, addedById:
     .limit(1);
   if (existing) return;
   await db.insert(boardMembers).values({ boardId, userId, addedById });
+  const board = await getBoardById(boardId);
+  if (board) await shareProjectIfCollaborative(board.projectId);
 }
 
 export async function removeBoardMember(boardId: number, userId: number) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
+  const board = await getBoardById(boardId);
   await db.delete(boardMembers).where(and(eq(boardMembers.boardId, boardId), eq(boardMembers.userId, userId)));
+  if (board) await privatizeProjectIfSolo(board.projectId);
 }
 
 export async function getCollaboratorsForUser(userId: number, excludeProjectId?: number) {
@@ -1010,24 +1144,45 @@ export async function createInvite(data: {
   email: string;
   name?: string;
   projectId: number;
+  projectIds?: number[];
   boardId?: number;
   invitedById: number;
 }): Promise<{ token: string }> {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
+  const projectIds = Array.from(new Set(data.projectIds?.length ? data.projectIds : [data.projectId]));
   const token = nanoid(32);
   const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-  await db.insert(teamInvites).values({
+  const result = await db.insert(teamInvites).values({
     email: data.email.toLowerCase(),
     name: data.name ?? null,
-    projectId: data.projectId,
-    boardId: data.boardId ?? null,
+    projectId: projectIds[0] ?? data.projectId,
+    boardId: projectIds.length === 1 ? (data.boardId ?? null) : null,
     invitedById: data.invitedById,
     token,
     status: "pending",
     expiresAt,
   });
+  const inviteId = result[0].insertId;
+  if (projectIds.length) {
+    await db.insert(teamInviteProjects).values(projectIds.map((projectId) => ({ inviteId, projectId })));
+  }
   return { token };
+}
+
+async function inviteTargetIds(inviteId: number, fallbackProjectId: number): Promise<number[]> {
+  const ids = await getInviteProjectIds(inviteId);
+  return ids.length ? ids : [fallbackProjectId];
+}
+
+export async function getInviteProjectIds(inviteId: number): Promise<number[]> {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({ projectId: teamInviteProjects.projectId })
+    .from(teamInviteProjects)
+    .where(eq(teamInviteProjects.inviteId, inviteId));
+  return rows.map((row) => row.projectId);
 }
 
 export async function getInviteByToken(token: string) {
@@ -1040,7 +1195,16 @@ export async function getInviteByToken(token: string) {
 export async function listInvites(projectId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select().from(teamInvites).where(eq(teamInvites.projectId, projectId)).orderBy(desc(teamInvites.createdAt));
+  const direct = await db.select().from(teamInvites).where(eq(teamInvites.projectId, projectId));
+  const via = await db
+    .select({ invite: teamInvites })
+    .from(teamInviteProjects)
+    .innerJoin(teamInvites, eq(teamInviteProjects.inviteId, teamInvites.id))
+    .where(eq(teamInviteProjects.projectId, projectId));
+  const byId = new Map<number, (typeof direct)[number]>();
+  for (const row of direct) byId.set(row.id, row);
+  for (const row of via) byId.set(row.invite.id, row.invite);
+  return Array.from(byId.values()).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
 
 export async function revokeInvite(id: number) {
@@ -1061,12 +1225,15 @@ export async function acceptInvite(token: string, userId: number, userEmail: str
   if (invite.email.toLowerCase() !== userEmail.toLowerCase()) {
     throw new Error("Email mismatch");
   }
-  await addProjectMember(invite.projectId, userId, "member");
-  if (invite.boardId) {
+  const targetIds = await inviteTargetIds(invite.id, invite.projectId);
+  for (const projectId of targetIds) {
+    await addProjectMember(projectId, userId, "member");
+  }
+  if (invite.boardId && targetIds.length === 1) {
     await addBoardMember(invite.boardId, userId, invite.invitedById);
   }
   await db.update(teamInvites).set({ status: "accepted" }).where(eq(teamInvites.id, invite.id));
-  return invite;
+  return { ...invite, projectIds: targetIds };
 }
 
 export async function acceptPendingInvitesForEmail(email: string, openId: string) {
@@ -1080,8 +1247,11 @@ export async function acceptPendingInvitesForEmail(email: string, openId: string
     .where(and(eq(teamInvites.email, email.toLowerCase()), eq(teamInvites.status, "pending")));
   for (const invite of pending) {
     if (invite.expiresAt >= new Date()) {
-      await addProjectMember(invite.projectId, user.id, "member");
-      if (invite.boardId) {
+      const targetIds = await inviteTargetIds(invite.id, invite.projectId);
+      for (const projectId of targetIds) {
+        await addProjectMember(projectId, user.id, "member");
+      }
+      if (invite.boardId && targetIds.length === 1) {
         await addBoardMember(invite.boardId, user.id, invite.invitedById);
       }
       await db.update(teamInvites).set({ status: "accepted" }).where(eq(teamInvites.id, invite.id));

@@ -45,6 +45,11 @@ vi.mock("./db", () => {
   removeBoardMember: vi.fn().mockResolvedValue(undefined),
   setBoardAccessMode: vi.fn().mockResolvedValue(undefined),
   getProjects: vi.fn().mockResolvedValue([mockProject]),
+  annotateProjectList: vi.fn(async (rows: Array<Record<string, unknown>>) =>
+    rows.map((row) => ({ ...row, accessibleBoardCount: 1, soleBoardId: 1, canDelete: true }))
+  ),
+  projectHasExternalAccess: vi.fn().mockResolvedValue(false),
+  getInviteProjectIds: vi.fn().mockResolvedValue([]),
   getProjectById: vi.fn().mockResolvedValue(mockProject),
   createProject: vi.fn().mockResolvedValue(1),
   updateProject: vi.fn().mockResolvedValue(undefined),
@@ -202,6 +207,7 @@ describe("auth", () => {
 describe("projects", () => {
   beforeEach(() => {
     vi.mocked(db.assertProjectAccess).mockResolvedValue("owner");
+    vi.mocked(db.deleteProject).mockClear();
   });
 
   it("list returns projects for the current user", async () => {
@@ -230,6 +236,58 @@ describe("projects", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.projects.create({ name: "New Project" });
     expect(result).toBe(1);
+  });
+
+  it("global admin deletes a private project they do not belong to", async () => {
+    vi.mocked(db.getProjectById).mockResolvedValue({
+      id: 9,
+      name: "Private",
+      description: null,
+      color: null,
+      icon: null,
+      status: "active",
+      ownerId: 4,
+      visibility: "private",
+      area: "clientes",
+      strategicPriority: "normal",
+      leadId: null,
+      linkedProjectId: null,
+      contractId: null,
+      acquisitionOwnerId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    vi.mocked(db.getProjectMemberRole).mockResolvedValue(null);
+    const { ctx } = makeCtx({ id: 1, role: "admin" });
+    const caller = appRouter.createCaller(ctx);
+    await caller.projects.delete({ id: 9 });
+    expect(db.deleteProject).toHaveBeenCalledWith(9);
+  });
+
+  it("global admin cannot delete a shared project they do not own", async () => {
+    vi.mocked(db.getProjectById).mockResolvedValue({
+      id: 9,
+      name: "Shared",
+      description: null,
+      color: null,
+      icon: null,
+      status: "active",
+      ownerId: 4,
+      visibility: "shared",
+      area: "clientes",
+      strategicPriority: "normal",
+      leadId: null,
+      linkedProjectId: null,
+      contractId: null,
+      acquisitionOwnerId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    vi.mocked(db.getProjectMemberRole).mockResolvedValue(null);
+    const { ctx } = makeCtx({ id: 1, role: "admin" });
+    const caller = appRouter.createCaller(ctx);
+    await expect(caller.projects.delete({ id: 9 })).rejects.toThrow(TRPCError);
+    expect(db.deleteProject).not.toHaveBeenCalled();
   });
 });
 
@@ -371,6 +429,64 @@ describe("tasks", () => {
     await expect(
       caller.tasks.addComment({ taskId: 1, content: "Hello team" })
     ).resolves.not.toThrow();
+  });
+});
+
+describe("proposals AI", () => {
+  const originalKey = ENV.openRouterApiKey;
+  const briefing = {
+    description: "Novo site institucional com CMS e blog",
+    tone: "formal" as const,
+    sections: ["intro" as const],
+  };
+  const context = { clientName: "Acme", title: "Site" };
+
+  afterEach(() => {
+    ENV.openRouterApiKey = originalKey;
+    vi.unstubAllGlobals();
+  });
+
+  it("aiStatus reports disabled when the key is the placeholder", async () => {
+    ENV.openRouterApiKey = "sk-or-v1-your-key-here";
+    const caller = appRouter.createCaller(makeCtx().ctx);
+    await expect(caller.proposals.aiStatus()).resolves.toMatchObject({ enabled: false });
+  });
+
+  it("aiDraft fails with PRECONDITION_FAILED when not configured", async () => {
+    ENV.openRouterApiKey = "";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const caller = appRouter.createCaller(makeCtx().ctx);
+    await expect(caller.proposals.aiDraft({ briefing, context })).rejects.toMatchObject({
+      code: "PRECONDITION_FAILED",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("aiDraft rejects a briefing shorter than 20 chars", async () => {
+    ENV.openRouterApiKey = "sk-or-v1-test";
+    const caller = appRouter.createCaller(makeCtx().ctx);
+    await expect(
+      caller.proposals.aiDraft({ briefing: { ...briefing, description: "curto" }, context })
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("aiDraft returns the parsed draft from OpenRouter", async () => {
+    ENV.openRouterApiKey = "sk-or-v1-test";
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ choices: [{ message: { content: '{"intro":"Olá Acme"}' } }] }),
+          { status: 200 }
+        )
+      )
+    );
+    const caller = appRouter.createCaller(makeCtx({ id: 99 }).ctx);
+    await expect(caller.proposals.aiDraft({ briefing, context })).resolves.toMatchObject({
+      intro: "Olá Acme",
+    });
   });
 });
 

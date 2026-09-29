@@ -22,7 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Flame, Plus, Briefcase } from "lucide-react";
+import { Flame, Plus, Briefcase, FileText, FilePlus2, Receipt } from "lucide-react";
 import { toast } from "sonner";
 import { fmtBrl } from "@shared/billing";
 import {
@@ -43,6 +43,13 @@ const STATUSES = [
 
 type LeadStatus = (typeof STATUSES)[number]["id"];
 
+const CONTRACT_STATUS_LABEL: Record<string, string> = {
+  draft: "rascunho",
+  active: "ativo",
+  completed: "concluído",
+  cancelled: "cancelado",
+};
+
 export default function Crm() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
@@ -55,6 +62,7 @@ export default function Crm() {
 
   const { data: rows, isLoading } = trpc.crm.listLeads.useQuery();
   const { data: projects } = trpc.projects.list.useQuery();
+  const { data: proposalCounts } = trpc.proposals.countsByLead.useQuery();
 
   const createLead = trpc.crm.createStandaloneLead.useMutation({
     onSuccess: () => {
@@ -70,8 +78,16 @@ export default function Crm() {
   });
 
   const updateLead = trpc.crm.updateLead.useMutation({
-    onSuccess: () => {
+    onSuccess: (res) => {
       utils.crm.listLeads.invalidate();
+      const integration = res?.integration;
+      if (integration) {
+        toast.success("Lead ganho. Projeto e contrato atualizados", {
+          description: integration.paymentsCreated ? `${integration.paymentsCreated} parcela(s) criada(s).` : undefined,
+          action: { label: "Abrir projeto", onClick: () => setLocation(`/projects/${integration.projectId}?tab=faturamento`) },
+        });
+        return;
+      }
       toast.success("Lead atualizado");
     },
     onError: (e) => toast.error(e.message || "Falha ao atualizar"),
@@ -97,10 +113,16 @@ export default function Crm() {
             Pipeline de leads e oportunidades
           </p>
         </div>
-        <Button size="sm" className="gap-1.5" onClick={() => setShowCreate(true)}>
-          <Plus className="h-3.5 w-3.5" />
-          Novo lead
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" className="gap-1.5" onClick={() => setLocation("/proposals")}>
+            <FileText className="h-3.5 w-3.5" />
+            Propostas
+          </Button>
+          <Button size="sm" className="gap-1.5" onClick={() => setShowCreate(true)}>
+            <Plus className="h-3.5 w-3.5" />
+            Novo lead
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -131,13 +153,13 @@ export default function Crm() {
                 </Badge>
               </div>
               <div className="space-y-2 min-h-[120px]">
-                {(byStatus[col.id] ?? []).map(({ lead, projectName }) => (
+                {(byStatus[col.id] ?? []).map(({ lead, projectName, contractId, contractStatus, contractValue }) => (
                   <Card key={lead.id} className="border-0 shadow-sm">
                     <CardContent className="p-3 space-y-2">
                       <div className="flex items-start justify-between gap-1">
                         <p className="text-sm font-medium leading-snug">{lead.title}</p>
                         {lead.isHot && (
-                          <Flame className="h-3.5 w-3.5 text-orange-500 shrink-0" />
+                          <Flame className="h-3.5 w-3.5 text-data-3-ink shrink-0" />
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">{lead.clientName}</p>
@@ -151,6 +173,18 @@ export default function Crm() {
                           onClick={() => setLocation(`/projects/${lead.projectId}`)}
                         >
                           {projectName ?? `Projeto #${lead.projectId}`}
+                        </button>
+                      )}
+                      {contractId && lead.projectId && (
+                        <button
+                          type="button"
+                          onClick={() => setLocation(`/projects/${lead.projectId}?tab=faturamento`)}
+                          className="block rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          <Badge variant="outline" className="h-5 gap-1 text-[10px]">
+                            <Receipt className="h-3 w-3" />
+                            Contrato {fmtBrl(parseFloat(String(contractValue ?? 0)))} · {CONTRACT_STATUS_LABEL[contractStatus ?? "active"]}
+                          </Badge>
                         </button>
                       )}
                       <Select
@@ -172,6 +206,29 @@ export default function Crm() {
                           ))}
                         </SelectContent>
                       </Select>
+                      <div className="flex items-center justify-between gap-1 pt-0.5">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1 px-2 text-xs"
+                          onClick={() => setLocation(`/proposals/new?leadId=${lead.id}`)}
+                        >
+                          <FilePlus2 className="h-3.5 w-3.5" />
+                          Gerar proposta
+                        </Button>
+                        {!!proposalCounts?.[lead.id] && (
+                          <button
+                            type="button"
+                            onClick={() => setLocation(`/proposals?leadId=${lead.id}`)}
+                            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <Badge variant="secondary" className="h-5 gap-1 text-[10px] hover:bg-secondary/80">
+                              <FileText className="h-3 w-3" />
+                              {proposalCounts[lead.id]} {proposalCounts[lead.id] === 1 ? "proposta" : "propostas"}
+                            </Badge>
+                          </button>
+                        )}
+                      </div>
                     </CardContent>
                   </Card>
                 ))}

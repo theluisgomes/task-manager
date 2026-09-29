@@ -79,6 +79,52 @@ put_secret() {
   log "Secret ready: $name"
 }
 
+# Last KEY=value from a dotenv file, without sourcing the rest of the file.
+read_env_value() {
+  local file="$1" key="$2" line
+  [[ -f "$file" ]] || return 0
+  line="$(grep -E "^${key}=" "$file" | tail -n 1 || true)"
+  [[ -n "$line" ]] || return 0
+  line="${line#"${key}"=}"
+  line="${line%$'\r'}"
+  line="${line#\"}"; line="${line%\"}"
+  line="${line#\'}"; line="${line%\'}"
+  printf '%s' "$line"
+}
+
+grant_secret_access() {
+  local name="$1" pnum sa
+  gcloud secrets describe "$name" --project="$PROJECT_ID" >/dev/null 2>&1 || return 0
+  pnum="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+  sa="${pnum}-compute@developer.gserviceaccount.com"
+  gcloud secrets add-iam-policy-binding "$name" --project="$PROJECT_ID" \
+    --member="serviceAccount:${sa}" --role="roles/secretmanager.secretAccessor" >/dev/null
+}
+
+# Publishes OPENROUTER_API_KEY from deploy.env, or from the local .env when unset.
+# Returns 1 when there is no key to publish.
+sync_openrouter_secret() {
+  local key="${OPENROUTER_API_KEY:-}"
+  [[ -n "$key" ]] || key="$(read_env_value "$ROOT_DIR/.env" OPENROUTER_API_KEY)"
+  if [[ -z "$key" || "$key" == "sk-or-v1-your-key-here" ]]; then
+    warn "OPENROUTER_API_KEY ausente — o assistente de IA fica desligado em produção."
+    return 1
+  fi
+  printf '%s' "$key" | put_secret openrouter-api-key
+  grant_secret_access openrouter-api-key
+}
+
+openrouter_env_vars() {
+  local model fallback
+  model="${OPENROUTER_MODEL:-}"
+  [[ -n "$model" ]] || model="$(read_env_value "$ROOT_DIR/.env" OPENROUTER_MODEL)"
+  [[ -n "$model" ]] || model="qwen/qwen3-30b-a3b-instruct-2507"
+  fallback="${OPENROUTER_FALLBACK_MODEL:-}"
+  [[ -n "$fallback" ]] || fallback="$(read_env_value "$ROOT_DIR/.env" OPENROUTER_FALLBACK_MODEL)"
+  [[ -n "$fallback" ]] || fallback="google/gemma-4-31b-it:free"
+  printf 'OPENROUTER_MODEL=%s,OPENROUTER_FALLBACK_MODEL=%s' "$model" "$fallback"
+}
+
 # ─── provision ────────────────────────────────────────────────────────────────
 cmd_provision() {
   require_cmd gcloud
@@ -153,15 +199,11 @@ cmd_provision() {
   printf '%s' "$db_url"   | put_secret db-url-secret
   [[ -n "${GOOGLE_CLIENT_SECRET:-}" ]] && printf '%s' "$GOOGLE_CLIENT_SECRET" | put_secret google-client-secret
   [[ -n "${RESEND_API_KEY:-}" ]]       && printf '%s' "$RESEND_API_KEY"       | put_secret resend-api-key
+  sync_openrouter_secret || true
 
   # Grant the Cloud Run runtime SA (default compute SA) access to the secrets
-  local pnum sa
-  pnum="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
-  sa="${pnum}-compute@developer.gserviceaccount.com"
-  for s in jwt-secret db-url-secret google-client-secret resend-api-key; do
-    gcloud secrets describe "$s" --project="$PROJECT_ID" >/dev/null 2>&1 || continue
-    gcloud secrets add-iam-policy-binding "$s" --project="$PROJECT_ID" \
-      --member="serviceAccount:${sa}" --role="roles/secretmanager.secretAccessor" >/dev/null
+  for s in jwt-secret db-url-secret google-client-secret resend-api-key openrouter-api-key; do
+    grant_secret_access "$s"
   done
 
   log "Provision complete. Cloud SQL connection: $conn"
@@ -226,12 +268,16 @@ cmd_deploy() {
   local env_vars="NODE_ENV=production,VITE_APP_ID=${VITE_APP_ID:-task-manager-pro},GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}"
   [[ -n "${OWNER_OPEN_ID:-}" ]] && env_vars="${env_vars},OWNER_OPEN_ID=${OWNER_OPEN_ID}"
   [[ -n "${EMAIL_FROM:-}" ]]    && env_vars="${env_vars},EMAIL_FROM=${EMAIL_FROM}"
+  env_vars="${env_vars},$(openrouter_env_vars)"
 
   local secrets="JWT_SECRET=jwt-secret:latest,DATABASE_URL=db-url-secret:latest"
   gcloud secrets describe google-client-secret --project="$PROJECT_ID" >/dev/null 2>&1 \
     && secrets="${secrets},GOOGLE_CLIENT_SECRET=google-client-secret:latest"
   gcloud secrets describe resend-api-key --project="$PROJECT_ID" >/dev/null 2>&1 \
     && secrets="${secrets},RESEND_API_KEY=resend-api-key:latest"
+  if sync_openrouter_secret; then
+    secrets="${secrets},OPENROUTER_API_KEY=openrouter-api-key:latest"
+  fi
 
   log "Deploying to Cloud Run..."
   gcloud run deploy "$SERVICE_NAME" \

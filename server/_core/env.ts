@@ -20,6 +20,11 @@ export const ENV = {
   smtpPass: process.env.SMTP_PASS ?? "",
   paymentReminderEmail: process.env.PAYMENT_REMINDER_EMAIL ?? "rodrigo@wisemetrics.in",
   cronSecret: process.env.CRON_SECRET ?? "",
+  openRouterApiKey: process.env.OPENROUTER_API_KEY ?? "",
+  openRouterModel: process.env.OPENROUTER_MODEL || "qwen/qwen3-30b-a3b-instruct-2507",
+  openRouterFallbackModel: process.env.OPENROUTER_FALLBACK_MODEL || "google/gemma-4-31b-it:free",
+  openRouterBaseUrl: process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1",
+  openRouterTimeoutMs: parseInt(process.env.OPENROUTER_TIMEOUT_MS ?? "60000", 10),
 };
 
 export function isOAuthConfigured(): boolean {
@@ -27,6 +32,13 @@ export function isOAuthConfigured(): boolean {
     (ENV.googleClientId && ENV.googleClientSecret) ||
       (ENV.microsoftClientId && ENV.microsoftClientSecret)
   );
+}
+
+export const OPENROUTER_KEY_PLACEHOLDER = "sk-or-v1-your-key-here";
+
+export function isOpenRouterConfigured(): boolean {
+  const key = ENV.openRouterApiKey.trim();
+  return key.length > 0 && key !== OPENROUTER_KEY_PLACEHOLDER;
 }
 
 export function getOAuthRedirectUri(path: string): string {

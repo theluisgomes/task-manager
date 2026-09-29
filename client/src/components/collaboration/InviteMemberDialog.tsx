@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -18,6 +19,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { PROJECT_AREAS, type ProjectArea } from "@shared/projectAreas";
 
 export function InviteMemberDialog({
   open,
@@ -25,6 +27,8 @@ export function InviteMemberDialog({
   projectId: fixedProjectId,
   boardId,
   projects,
+  allowBulk,
+  initialProjectIds,
   onSuccess,
 }: {
   open: boolean;
@@ -32,18 +36,26 @@ export function InviteMemberDialog({
   projectId?: number;
   boardId?: number;
   projects?: Array<{ id: number; name: string }>;
+  allowBulk?: boolean;
+  initialProjectIds?: number[];
   onSuccess?: () => void;
 }) {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [projectId, setProjectId] = useState<string>(fixedProjectId?.toString() ?? "");
+  const [mode, setMode] = useState<"projects" | "area">("projects");
+  const [selectedIds, setSelectedIds] = useState<number[]>(initialProjectIds ?? []);
+  const [area, setArea] = useState<ProjectArea>("clientes");
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
 
+  const initialKey = (initialProjectIds ?? []).join(",");
+
   useEffect(() => {
-    if (open && fixedProjectId) {
-      setProjectId(fixedProjectId.toString());
-    }
-  }, [open, fixedProjectId]);
+    if (!open) return;
+    if (fixedProjectId) setProjectId(fixedProjectId.toString());
+    setSelectedIds(initialKey ? initialKey.split(",").map(Number) : []);
+    setMode("projects");
+  }, [open, fixedProjectId, initialKey]);
 
   const copyInviteLink = async (url: string) => {
     await navigator.clipboard.writeText(url);
@@ -55,10 +67,7 @@ export function InviteMemberDialog({
       onSuccess?.();
       if (data.emailSent) {
         toast.success("Invitation email sent");
-        setEmail("");
-        setName("");
-        if (!fixedProjectId) setProjectId("");
-        setInviteUrl(null);
+        reset();
         onClose();
       } else {
         setInviteUrl(data.inviteUrl);
@@ -68,15 +77,32 @@ export function InviteMemberDialog({
     onError: (err) => toast.error(err.message || "Failed to create invitation"),
   });
 
-  const handleClose = () => {
+  const reset = () => {
     setEmail("");
     setName("");
     if (!fixedProjectId) setProjectId("");
+    setSelectedIds(initialProjectIds ?? []);
+    setMode("projects");
     setInviteUrl(null);
+  };
+
+  const handleClose = () => {
+    reset();
     onClose();
   };
 
   const resolvedProjectId = fixedProjectId ?? (projectId ? parseInt(projectId) : 0);
+  const toggleProject = (id: number) => {
+    setSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]);
+  };
+
+  const canSend = !!email.trim() && !invite.isPending && (
+    fixedProjectId
+      ? true
+      : allowBulk
+        ? (mode === "area" || selectedIds.length > 0)
+        : !!resolvedProjectId
+  );
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -116,7 +142,49 @@ export function InviteMemberDialog({
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
-            {!fixedProjectId && projects && (
+            {!fixedProjectId && allowBulk && (
+              <div className="space-y-3">
+                <div className="flex border rounded-lg overflow-hidden w-fit" role="group" aria-label="Modo de convite">
+                  <button type="button" className={`px-3 py-1.5 text-xs ${mode === "projects" ? "bg-secondary font-medium" : ""}`} onClick={() => setMode("projects")}>
+                    Projetos
+                  </button>
+                  <button type="button" className={`px-3 py-1.5 text-xs ${mode === "area" ? "bg-secondary font-medium" : ""}`} onClick={() => setMode("area")}>
+                    Área
+                  </button>
+                </div>
+                {mode === "projects" ? (
+                  <div className="max-h-40 overflow-y-auto space-y-2 rounded-md border p-2">
+                    {projects?.length ? projects.map((project) => (
+                      <label key={project.id} className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={selectedIds.includes(project.id)}
+                          onCheckedChange={() => toggleProject(project.id)}
+                        />
+                        <span className="truncate">{project.name}</span>
+                      </label>
+                    )) : (
+                      <p className="text-xs text-muted-foreground">Nenhum projeto disponível</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <Label>Área</Label>
+                    <Select value={area} onValueChange={(value) => setArea(value as ProjectArea)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {PROJECT_AREAS.map((item) => (
+                          <SelectItem key={item.id} value={item.id}>{item.label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      Inclui os projetos ativos dessa área em que você é admin.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+            {!fixedProjectId && !allowBulk && projects && (
               <div className="space-y-1.5">
                 <Label>Project *</Label>
                 <Select value={projectId} onValueChange={setProjectId}>
@@ -144,15 +212,23 @@ export function InviteMemberDialog({
                 Cancel
               </Button>
               <Button
-                onClick={() =>
-                  invite.mutate({
-                    email,
-                    name: name || undefined,
-                    projectId: resolvedProjectId,
-                    boardId,
-                  })
-                }
-                disabled={!email.trim() || !resolvedProjectId || invite.isPending}
+                onClick={() => {
+                  if (fixedProjectId || !allowBulk) {
+                    invite.mutate({
+                      email,
+                      name: name || undefined,
+                      projectId: resolvedProjectId,
+                      boardId,
+                    });
+                    return;
+                  }
+                  if (mode === "area") {
+                    invite.mutate({ email, name: name || undefined, area });
+                    return;
+                  }
+                  invite.mutate({ email, name: name || undefined, projectIds: selectedIds });
+                }}
+                disabled={!canSend}
               >
                 {invite.isPending ? "Sending..." : "Send Invite"}
               </Button>

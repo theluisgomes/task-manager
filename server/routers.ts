@@ -5,7 +5,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { forbidden, notFound, assertFinanceAdmin } from "./authz";
-import { isGlobalAdmin } from "@shared/roles";
+import { canDeleteProject, hasMinRole, isGlobalAdmin } from "@shared/roles";
 import {
   acceptInvite,
   addBoardMember,
@@ -46,6 +46,9 @@ import {
   getProjectMemberRole,
   getProjectMembers,
   getProjects,
+  getInviteProjectIds,
+  projectHasExternalAccess,
+  annotateProjectList,
   getTaskActivity,
   getTaskAttachmentById,
   getTaskAttachments,
@@ -107,6 +110,8 @@ import {
   getTaskDependencies,
   getTeamUtilization,
   getTimesheetsByProject,
+  getMyWeekTimesheet,
+  upsertMyTimesheet,
   getUpcomingAlerts,
   linkProspectToSale,
   listAllLeads,
@@ -122,7 +127,33 @@ import {
   updateEmploymentContract,
   updateLead,
   updateTimesheet,
+  listProposals,
+  getProposal,
+  createProposal,
+  updateProposal,
+  setProposalStatus,
+  deleteProposal,
+  countProposalsByLead,
+  createCalendarEvent,
+  deleteCalendarEvent,
+  getCalendarEventById,
+  getContractById,
+  listCalendarEventsByContract,
+  listContractsForUser,
+  updateCalendarEvent,
 } from "./operationalDb";
+import { PROPOSAL_STATUS_IDS, leadStatusForProposal } from "@shared/proposals";
+import {
+  onLeadStatusChanged,
+  onLeadValueChanged,
+  onProposalAccepted,
+  onProposalUpdated,
+  syncProjectCompletion,
+} from "./integrations";
+import { proposalAiBriefingSchema, proposalAiContextSchema } from "@shared/proposalAi";
+import { generateDraft, ProposalAiError, rewriteText } from "./proposalAi";
+import { OpenRouterError } from "./_core/openRouter";
+import { isOpenRouterConfigured } from "./_core/env";
 import { storageGetSignedUrl, storagePut } from "./storage";
 
 async function requireProjectAccess(
@@ -167,9 +198,10 @@ async function requireTaskAccess(
 
 // ─── Projects ─────────────────────────────────────────────────────────────────
 const projectsRouter = router({
-  list: protectedProcedure.query(({ ctx }) =>
-    getProjects(ctx.user.id, isGlobalAdmin(ctx.user.role))
-  ),
+  list: protectedProcedure.query(async ({ ctx }) => {
+    const rows = await getProjects(ctx.user.id, isGlobalAdmin(ctx.user.role));
+    return annotateProjectList(rows, ctx.user.id, isGlobalAdmin(ctx.user.role));
+  }),
 
   byId: protectedProcedure
     .input(z.object({ id: z.number() }))
@@ -188,6 +220,7 @@ const projectsRouter = router({
       area: z.enum(PROJECT_AREA_IDS).optional(),
       strategicPriority: z.enum(["normal", "high", "very_high"]).optional(),
       acquisitionOwnerId: z.number().optional(),
+      visibility: z.enum(["private", "shared"]).optional(),
     }))
     .mutation(({ input, ctx }) =>
       createProject({ ...input, ownerId: ctx.user.id })
@@ -204,9 +237,20 @@ const projectsRouter = router({
       strategicPriority: z.enum(["normal", "high", "very_high"]).optional(),
       linkedProjectId: z.number().nullable().optional(),
       acquisitionOwnerId: z.number().nullable().optional(),
+      visibility: z.enum(["private", "shared"]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await requireProjectAccess(ctx.user.id, input.id, "admin");
+      if (input.visibility) {
+        await requireProjectAccess(ctx.user.id, input.id, "owner");
+        if (input.visibility === "private" && await projectHasExternalAccess(input.id)) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "Projeto com outros membros não pode ser privado",
+          });
+        }
+      } else {
+        await requireProjectAccess(ctx.user.id, input.id, "admin");
+      }
       const { id, ...data } = input;
       return updateProject(id, data);
     }),
@@ -214,7 +258,18 @@ const projectsRouter = router({
   delete: protectedProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ input, ctx }) => {
-      await requireProjectAccess(ctx.user.id, input.id, "owner");
+      const project = await getProjectById(input.id);
+      if (!project) notFound("Project not found");
+      const memberRole = await getProjectMemberRole(ctx.user.id, input.id);
+      if (!canDeleteProject({
+        userId: ctx.user.id,
+        globalRole: ctx.user.role,
+        ownerId: project.ownerId,
+        memberRole,
+        visibility: project.visibility ?? "private",
+      })) {
+        forbidden();
+      }
       return deleteProject(input.id);
     }),
 
@@ -255,7 +310,11 @@ const projectsRouter = router({
     }),
 
   listByArea: protectedProcedure.query(async ({ ctx }) => {
-    const list = await getProjects(ctx.user.id, isGlobalAdmin(ctx.user.role));
+    const list = await annotateProjectList(
+      await getProjects(ctx.user.id, isGlobalAdmin(ctx.user.role)),
+      ctx.user.id,
+      isGlobalAdmin(ctx.user.role)
+    );
     const grouped: Record<string, typeof list> = {};
     for (const area of PROJECT_AREA_IDS) grouped[area] = [];
     for (const p of list) {
@@ -736,27 +795,58 @@ const teamRouter = router({
     .input(z.object({
       email: z.string().email(),
       name: z.string().optional(),
-      projectId: z.number(),
+      projectId: z.number().optional(),
+      projectIds: z.array(z.number()).optional(),
+      area: z.enum(PROJECT_AREA_IDS).optional(),
       boardId: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await requireProjectAccess(ctx.user.id, input.projectId, "admin");
-      if (input.boardId) {
-        const board = await getBoardById(input.boardId);
-        if (!board || board.projectId !== input.projectId) {
-          notFound("Board not found");
+      let projectIds: number[] = [];
+      if (input.area) {
+        const mine = await getProjects(ctx.user.id, false);
+        for (const project of mine) {
+          if (project.area !== input.area || project.status !== "active") continue;
+          const role = await getProjectMemberRole(ctx.user.id, project.id);
+          if (role && hasMinRole(role, "admin")) projectIds.push(project.id);
+        }
+      } else {
+        projectIds = Array.from(new Set(input.projectIds?.length ? input.projectIds : input.projectId != null ? [input.projectId] : []));
+        for (const projectId of projectIds) {
+          await requireProjectAccess(ctx.user.id, projectId, "admin");
         }
       }
-      const { token } = await createInvite({ ...input, invitedById: ctx.user.id });
-      const project = await getProjectById(input.projectId);
+      if (!projectIds.length) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "Selecione pelo menos um projeto" });
+      }
+      if (input.boardId) {
+        if (projectIds.length !== 1) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "Board invite requires a single project" });
+        }
+        const board = await getBoardById(input.boardId);
+        if (!board || board.projectId !== projectIds[0]) notFound("Board not found");
+      }
+      const { token } = await createInvite({
+        email: input.email,
+        name: input.name,
+        projectId: projectIds[0],
+        projectIds,
+        boardId: input.boardId,
+        invitedById: ctx.user.id,
+      });
+      const names: string[] = [];
+      for (const projectId of projectIds) {
+        const project = await getProjectById(projectId);
+        if (project) names.push(project.name);
+      }
+      const projectName = names.length ? names.join(", ") : "a project";
       const base = ENV.oauthRedirectBaseUrl || "http://localhost:3000";
       const inviteUrl = `${base}/invite/${token}`;
       const emailResult = await sendEmail({
         to: input.email,
-        subject: `Invitation to join ${project?.name ?? "a project"}`,
+        subject: names.length > 1 ? `Invitation to join ${names.length} projects` : `Invitation to join ${projectName}`,
         html: inviteEmailHtml({
           inviterName: ctx.user.name ?? "A team member",
-          projectName: project?.name ?? "Project",
+          projectName,
           inviteUrl,
         }),
       });
@@ -765,6 +855,7 @@ const teamRouter = router({
         inviteUrl,
         emailSent: emailResult.sent,
         emailError: emailResult.error,
+        projectIds,
       };
     }),
 
@@ -785,12 +876,19 @@ const teamRouter = router({
       if (invite.status === "expired" || invite.expiresAt < new Date()) {
         return { status: "expired" as const };
       }
-      const project = await getProjectById(invite.projectId);
+      const projectIds = await getInviteProjectIds(invite.id);
+      const ids = projectIds.length ? projectIds : [invite.projectId];
+      const projects = [];
+      for (const id of ids) {
+        const project = await getProjectById(id);
+        if (project) projects.push({ id: project.id, name: project.name });
+      }
       const info = {
         email: invite.email,
         name: invite.name,
-        projectName: project?.name ?? "Project",
-        projectId: invite.projectId,
+        projectName: projects.map((p) => p.name).join(", ") || "Project",
+        projectId: ids[0],
+        projects,
       };
       if (invite.status === "accepted") {
         return { status: "accepted" as const, ...info };
@@ -814,22 +912,26 @@ const teamRouter = router({
         const message = err instanceof Error ? err.message : "Failed to accept invitation";
         throw new TRPCError({ code: "BAD_REQUEST", message });
       }
-      const project = await getProjectById(invite.projectId);
+      const projectId = invite.projectIds?.[0] ?? invite.projectId;
+      const names = invite.projectIds?.length
+        ? (await Promise.all(invite.projectIds.map((id) => getProjectById(id)))).flatMap((p) => p ? [p.name] : [])
+        : [((await getProjectById(projectId))?.name ?? "your project")];
+      const projectName = names.join(", ") || "your project";
       const inviter = await getUserById(invite.invitedById);
       if (inviter?.email) {
         const prefs = await getUserPreferences(inviter.id);
         if (prefs.emailOnInviteAccepted !== false) {
           await sendEmail({
             to: inviter.email,
-            subject: `${ctx.user.name ?? "Someone"} joined ${project?.name ?? "your project"}`,
+            subject: `${ctx.user.name ?? "Someone"} joined ${projectName}`,
             html: inviteAcceptedEmailHtml({
               memberName: ctx.user.name ?? ctx.user.email ?? "A user",
-              projectName: project?.name ?? "Project",
+              projectName,
             }),
           });
         }
       }
-      return { projectId: invite.projectId };
+      return { projectId };
     }),
 });
 
@@ -915,6 +1017,26 @@ const timesheetsRouter = router({
       await requireProjectAccess(ctx.user.id, input.projectId);
       return deleteTimesheet(input.id);
     }),
+
+  myWeek: protectedProcedure
+    .input(z.object({
+      weekStart: z.string(),
+      weekEnd: z.string(),
+    }))
+    .query(({ input, ctx }) => getMyWeekTimesheet(ctx.user.id, input.weekStart, input.weekEnd)),
+
+  upsert: protectedProcedure
+    .input(z.object({
+      projectId: z.number(),
+      date: z.string(),
+      hours: z.number().min(0),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      await requireProjectAccess(ctx.user.id, input.projectId, "member", false);
+      const role = await getProjectMemberRole(ctx.user.id, input.projectId);
+      if (!role) forbidden();
+      return upsertMyTimesheet(ctx.user.id, input.projectId, input.date, input.hours);
+    }),
 });
 
 const crmRouter = router({
@@ -959,10 +1081,13 @@ const crmRouter = router({
         }
       }
       const { id, projectId: _, completeDueDiligence, ...data } = input;
-      return updateLead(id, {
+      await updateLead(id, {
         ...data,
         dueDiligenceCompletedAt: completeDueDiligence ? new Date() : undefined,
       });
+      if (data.estimatedValue !== undefined) await onLeadValueChanged(id, data.estimatedValue);
+      const integration = data.status ? await onLeadStatusChanged(id, data.status, ctx.user.id) : null;
+      return { integration };
     }),
 
   getContract: protectedProcedure
@@ -996,8 +1121,10 @@ const crmRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
-      const { id, projectId: _, ...data } = input;
-      return updateContract(id, data);
+      const { id, projectId, ...data } = input;
+      await updateContract(id, data);
+      const projectCompleted = await syncProjectCompletion(projectId);
+      return { projectCompleted };
     }),
 
   listPayments: protectedProcedure
@@ -1045,8 +1172,10 @@ const crmRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
-      const { id, projectId: _, ...data } = input;
-      return updateContractPayment(id, data);
+      const { id, projectId, ...data } = input;
+      await updateContractPayment(id, data);
+      const projectCompleted = await syncProjectCompletion(projectId);
+      return { projectCompleted };
     }),
 
   createAllocation: protectedProcedure
@@ -1174,6 +1303,207 @@ const crmRouter = router({
     }),
 });
 
+const proposalItemSchema = z.object({
+  description: z.string().max(500),
+  quantity: z.number().min(0),
+  unitPrice: z.number().min(0),
+});
+
+const proposalInputSchema = z.object({
+  leadId: z.number().nullable().optional(),
+  projectId: z.number().nullable().optional(),
+  clientName: z.string().min(1).max(255),
+  contactName: z.string().max(255).nullable().optional(),
+  contactEmail: z.string().max(320).nullable().optional(),
+  title: z.string().min(1).max(255),
+  intro: z.string().nullable().optional(),
+  scope: z.string().nullable().optional(),
+  items: z.array(proposalItemSchema).max(100),
+  discount: z.number().min(0).optional(),
+  paymentTerms: z.string().nullable().optional(),
+  installments: z
+    .array(
+      z.object({
+        description: z.string().max(255),
+        percent: z.number().min(0).max(100),
+        dueType: z.enum(["fixed", "relative"]),
+        dueDate: z.string().nullable().optional(),
+        baseEventType: z.enum(["assinatura", "entrega"]).nullable().optional(),
+        daysAfterBase: z.number().int().min(0).nullable().optional(),
+      })
+    )
+    .max(24)
+    .nullable()
+    .optional(),
+  deliveryTime: z.string().max(255).nullable().optional(),
+  validUntil: z.string().nullable().optional(),
+  notes: z.string().nullable().optional(),
+});
+
+type AuthUser = { id: number; role: string };
+
+async function assertLinkAccess(
+  user: AuthUser,
+  links: { leadId?: number | null; projectId?: number | null }
+) {
+  const isAdmin = user.role === "admin";
+  if (links.projectId) {
+    await assertBillableFinanceAccess(user.id, user.role, links.projectId);
+  }
+  if (links.leadId && !isAdmin) {
+    const leads = await listAllLeads(user.id, false);
+    if (!leads.some((r) => r.lead.id === links.leadId)) forbidden("Not allowed to use this lead");
+  }
+}
+
+async function requireProposal(user: AuthUser, id: number) {
+  const proposal = await getProposal(id);
+  if (!proposal) notFound("Proposal not found");
+  if (user.role === "admin" || proposal.createdById === user.id) return proposal;
+  if (proposal.projectId) {
+    await requireProjectAccess(user.id, proposal.projectId);
+    return proposal;
+  }
+  forbidden("Not allowed to access this proposal");
+}
+
+function requireAiConfigured() {
+  if (!isOpenRouterConfigured()) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: "Assistente de IA não configurado. Defina OPENROUTER_API_KEY no .env.",
+    });
+  }
+}
+
+function toAiTrpcError(err: unknown): never {
+  if (err instanceof ProposalAiError) {
+    if (err.kind === "rate_limited") {
+      throw new TRPCError({
+        code: "TOO_MANY_REQUESTS",
+        message: "Limite de uso da IA atingido. Aguarde alguns minutos.",
+      });
+    }
+    throw new TRPCError({
+      code: "BAD_GATEWAY",
+      message: "A IA não retornou um formato válido. Tente novamente.",
+    });
+  }
+  if (err instanceof OpenRouterError) {
+    const messages = {
+      not_configured: "Assistente de IA não configurado. Defina OPENROUTER_API_KEY no .env.",
+      timeout: "A IA demorou demais para responder. Tente novamente.",
+      rate_limited: "O provedor de IA está sobrecarregado. Tente em instantes.",
+      upstream: "Falha ao falar com o provedor de IA. Tente novamente.",
+    } as const;
+    console.warn(`[proposal-ai] ${err.kind}: ${err.message.slice(0, 200)}`);
+    throw new TRPCError({
+      code: err.kind === "timeout" ? "TIMEOUT" : err.kind === "not_configured" ? "PRECONDITION_FAILED" : "BAD_GATEWAY",
+      message: messages[err.kind],
+    });
+  }
+  throw err;
+}
+
+const proposalsRouter = router({
+  aiStatus: protectedProcedure.query(() => ({
+    enabled: isOpenRouterConfigured(),
+    model: ENV.openRouterModel,
+  })),
+
+  aiDraft: protectedProcedure
+    .input(z.object({ briefing: proposalAiBriefingSchema, context: proposalAiContextSchema }))
+    .mutation(async ({ input, ctx }) => {
+      requireAiConfigured();
+      await assertLinkAccess(ctx.user, { leadId: input.context.leadId });
+      try {
+        return await generateDraft(ctx.user.id, input.briefing, input.context);
+      } catch (err) {
+        toAiTrpcError(err);
+      }
+    }),
+
+  aiRewrite: protectedProcedure
+    .input(
+      z.object({
+        field: z.enum(["intro", "scope"]),
+        text: z.string().trim().min(1).max(3000),
+        tone: proposalAiBriefingSchema.shape.tone,
+        context: z.object({ clientName: z.string().max(255), title: z.string().max(255) }),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      requireAiConfigured();
+      try {
+        return await rewriteText(ctx.user.id, input);
+      } catch (err) {
+        toAiTrpcError(err);
+      }
+    }),
+
+  list: protectedProcedure
+    .input(
+      z
+        .object({
+          leadId: z.number().optional(),
+          status: z.enum(PROPOSAL_STATUS_IDS).optional(),
+        })
+        .optional()
+    )
+    .query(({ input, ctx }) =>
+      listProposals(ctx.user.id, ctx.user.role === "admin", input ?? {})
+    ),
+
+  countsByLead: protectedProcedure.query(({ ctx }) =>
+    countProposalsByLead(ctx.user.id, ctx.user.role === "admin")
+  ),
+
+  get: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .query(({ input, ctx }) => requireProposal(ctx.user, input.id)),
+
+  create: protectedProcedure.input(proposalInputSchema).mutation(async ({ input, ctx }) => {
+    await assertLinkAccess(ctx.user, input);
+    return createProposal({ ...input, createdById: ctx.user.id });
+  }),
+
+  update: protectedProcedure
+    .input(proposalInputSchema.extend({ id: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      await requireProposal(ctx.user, input.id);
+      await assertLinkAccess(ctx.user, input);
+      const { id, ...data } = input;
+      await updateProposal(id, data);
+      await onProposalUpdated(id);
+      return id;
+    }),
+
+  setStatus: protectedProcedure
+    .input(z.object({ id: z.number(), status: z.enum(PROPOSAL_STATUS_IDS) }))
+    .mutation(async ({ input, ctx }) => {
+      const proposal = await requireProposal(ctx.user, input.id);
+      await setProposalStatus(input.id, input.status);
+      if (input.status === "accepted") {
+        const integration = await onProposalAccepted(input.id, ctx.user.id);
+        return { leadUpdated: true, integration };
+      }
+      const leadStatus = leadStatusForProposal(input.status);
+      if (proposal.leadId && leadStatus) {
+        await updateLead(proposal.leadId, { status: leadStatus });
+        await onLeadStatusChanged(proposal.leadId, leadStatus, ctx.user.id);
+      }
+      return { leadUpdated: Boolean(proposal.leadId && leadStatus), integration: null };
+    }),
+
+  delete: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      await requireProposal(ctx.user, input.id);
+      await deleteProposal(input.id);
+      return { success: true };
+    }),
+});
+
 const financeRouter = router({
   summary: protectedProcedure.query(({ ctx }) =>
     getFinanceSummaryForUser(ctx.user.id, ctx.user.role === "admin")
@@ -1230,6 +1560,26 @@ const financeRouter = router({
   }),
 });
 
+const calendarEventInputSchema = z.object({
+  title: z.string().trim().min(1).max(255),
+  description: z.string().max(2000).nullable().optional(),
+  startAt: z.string().min(1),
+  endAt: z.string().nullable().optional(),
+  allDay: z.boolean().optional(),
+  kind: z.enum(["reuniao", "entrega", "marco", "outro"]).optional(),
+});
+
+async function requireContractAccess(user: AuthUser, contractId: number) {
+  const contract = await getContractById(contractId);
+  if (!contract) notFound("Contrato não encontrado");
+  if (!contract.projectId) {
+    if (user.role !== "admin") forbidden("Contrato sem projeto vinculado");
+    return contract;
+  }
+  await requireProjectAccess(user.id, contract.projectId, "member", user.role === "admin");
+  return contract;
+}
+
 const calendarRouter = router({
   events: protectedProcedure
     .input(z.object({ start: z.string(), end: z.string() }))
@@ -1241,6 +1591,46 @@ const calendarRouter = router({
         new Date(input.end)
       )
     ),
+
+  contracts: protectedProcedure.query(({ ctx }) =>
+    listContractsForUser(ctx.user.id, ctx.user.role === "admin")
+  ),
+
+  listByContract: protectedProcedure
+    .input(z.object({ contractId: z.number() }))
+    .query(async ({ input, ctx }) => {
+      await requireContractAccess(ctx.user, input.contractId);
+      return listCalendarEventsByContract(input.contractId);
+    }),
+
+  createEvent: protectedProcedure
+    .input(calendarEventInputSchema.extend({ contractId: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      const contract = await requireContractAccess(ctx.user, input.contractId);
+      const { contractId, ...data } = input;
+      return createCalendarEvent({ ...data, contractId, projectId: contract.projectId, createdById: ctx.user.id });
+    }),
+
+  updateEvent: protectedProcedure
+    .input(calendarEventInputSchema.extend({ id: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      const event = await getCalendarEventById(input.id);
+      if (!event) notFound("Evento não encontrado");
+      await requireContractAccess(ctx.user, event.contractId);
+      const { id, ...data } = input;
+      await updateCalendarEvent(id, data);
+      return id;
+    }),
+
+  deleteEvent: protectedProcedure
+    .input(z.object({ id: z.number() }))
+    .mutation(async ({ input, ctx }) => {
+      const event = await getCalendarEventById(input.id);
+      if (!event) notFound("Evento não encontrado");
+      await requireContractAccess(ctx.user, event.contractId);
+      await deleteCalendarEvent(input.id);
+      return { success: true };
+    }),
 });
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
@@ -1313,6 +1703,7 @@ export const appRouter = router({
   kpi: kpiRouter,
   timesheets: timesheetsRouter,
   crm: crmRouter,
+  proposals: proposalsRouter,
   finance: financeRouter,
   calendar: calendarRouter,
   dashboard: dashboardRouter,

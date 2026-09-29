@@ -30,7 +30,9 @@ import { useIsMobile } from "@/hooks/useMobile";
 import {
   BarChart3,
   Calendar,
+  Clock,
   ChevronRight,
+  FileText,
   FolderKanban,
   Handshake,
   LayoutDashboard,
@@ -53,7 +55,9 @@ const menuItems = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/" },
   { icon: FolderKanban, label: "Projects", path: "/projects" },
   { icon: Handshake, label: "CRM", path: "/crm" },
+  { icon: FileText, label: "Propostas", path: "/proposals" },
   { icon: Calendar, label: "Calendar", path: "/calendar" },
+  { icon: Clock, label: "Horas", path: "/hours" },
   { icon: Users, label: "Team", path: "/team" },
   { icon: TrendingUp, label: "Finance", path: "/finance", badge: "Finance" },
   { icon: Settings, label: "Settings", path: "/settings" },
@@ -74,8 +78,8 @@ function LoginScreen() {
     <div className="flex items-center justify-center min-h-screen bg-background">
       <div className="flex flex-col items-center gap-8 p-8 max-w-sm w-full">
         <div className="flex flex-col items-center gap-4">
-          <div className="h-12 w-12 rounded-xl bg-primary flex items-center justify-center shadow-lg">
-            <FolderKanban className="h-6 w-6 text-primary-foreground" />
+          <div className="h-12 w-12 rounded-xl bg-signal flex items-center justify-center shadow-lg">
+            <FolderKanban className="h-6 w-6 text-ink" />
           </div>
           <div className="text-center">
             <h1 className="text-2xl font-semibold tracking-tight">Task Manager Pro</h1>
@@ -194,17 +198,17 @@ function DashboardLayoutContent({
       </a>
       <Sidebar
         collapsible="icon"
-        className="border-r border-border/50"
+        className="border-r border-sidebar-border"
       >
-        <SidebarHeader className="px-3 py-4 border-b border-border/50">
+        <SidebarHeader className="px-3 py-4 border-b border-sidebar-border">
             <div className="flex items-center gap-2.5">
-              <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center shrink-0">
-                <FolderKanban className="h-4 w-4 text-primary-foreground" />
+              <div className="h-8 w-8 rounded-lg bg-signal flex items-center justify-center shrink-0">
+                <FolderKanban className="h-4 w-4 text-ink" />
               </div>
               {!isCollapsed && (
                 <div className="min-w-0">
                   <p className="text-sm font-semibold truncate">Task Manager</p>
-                  <p className="text-[10px] text-muted-foreground">Pro Edition</p>
+                  <p className="text-[10px] text-sidebar-foreground/60">Pro Edition</p>
                 </div>
               )}
             </div>
@@ -233,17 +237,17 @@ function DashboardLayoutContent({
             </SidebarMenu>
           </SidebarContent>
 
-          <SidebarFooter className="p-2 border-t border-border/50">
+          <SidebarFooter className="p-2 border-t border-sidebar-border">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <button className="flex items-center gap-2.5 w-full p-2 rounded-lg hover:bg-muted/60 transition-colors text-left">
+                <button className="flex items-center gap-2.5 w-full p-2 rounded-lg hover:bg-sidebar-accent transition-colors text-left">
                   <Avatar className="h-7 w-7">
-                    <AvatarFallback className="text-[10px] bg-primary/15 text-primary">{initials}</AvatarFallback>
+                    <AvatarFallback className="text-[10px] bg-signal/20 text-signal">{initials}</AvatarFallback>
                   </Avatar>
                   {!isCollapsed && (
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-medium truncate">{user?.name ?? "User"}</p>
-                      <p className="text-[10px] text-muted-foreground truncate">{user?.email ?? ""}</p>
+                      <p className="text-[10px] text-sidebar-foreground/60 truncate">{user?.email ?? ""}</p>
                     </div>
                   )}
                 </button>

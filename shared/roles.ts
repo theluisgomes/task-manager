@@ -15,6 +15,23 @@ export function isGlobalAdmin(role: string | null | undefined): boolean {
   return role === "admin";
 }
 
+/** Owner can always delete. A global admin who is not a member can delete only private projects. */
+export function canDeleteProject(input: {
+  userId: number;
+  globalRole: string | null | undefined;
+  ownerId: number;
+  memberRole: string | null | undefined;
+  visibility: "private" | "shared";
+}): boolean {
+  if (input.memberRole === "owner" || input.ownerId === input.userId) return true;
+  return (
+    isGlobalAdmin(input.globalRole) &&
+    !input.memberRole &&
+    input.visibility === "private" &&
+    input.ownerId !== input.userId
+  );
+}
+
 /** Owners and project admins — or global admins — can manage project/board settings. */
 export function canManageProject(
   projectRole: string | null | undefined,

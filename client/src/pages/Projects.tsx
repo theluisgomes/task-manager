@@ -63,7 +63,12 @@ import {
   Layers,
   UserPlus,
   Share2,
+  CalendarDays,
+  FileText,
+  Handshake,
 } from "lucide-react";
+import { CalendarEventDialog, type EditableCalendarEvent } from "@/components/calendar/CalendarEventDialog";
+import { calendarEventKindLabel } from "@/components/calendar/eventTypes";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { PROJECT_AREAS, getProjectAreaLabel, isBillableProjectArea, type ProjectArea } from "@shared/projectAreas";
@@ -82,12 +87,7 @@ import {
   MemberAvatars,
   MembersList,
 } from "@/components/collaboration";
-
-const PROJECT_COLORS = [
-  "#6366f1", "#8b5cf6", "#ec4899", "#f43f5e",
-  "#f97316", "#eab308", "#22c55e", "#14b8a6",
-  "#0ea5e9", "#3b82f6",
-];
+import { BRAND, PROJECT_COLORS, foregroundOn } from "@/lib/brand";
 
 const PRIORITY_LABEL: Record<string, string> = {
   normal: "Normal",
@@ -105,6 +105,11 @@ type ProjectItem = {
   status: string;
   area: ProjectArea;
   createdAt: Date;
+  ownerId?: number;
+  visibility?: "private" | "shared";
+  accessibleBoardCount?: number;
+  soleBoardId?: number | null;
+  canDelete?: boolean;
 };
 
 function useAreaExpanded() {
@@ -131,9 +136,10 @@ function CreateProjectModal({ open, onClose, defaultArea }: { open: boolean; onC
   const utils = trpc.useUtils();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
-  const [color, setColor] = useState(PROJECT_COLORS[0]);
+  const [color, setColor] = useState<string>(PROJECT_COLORS[0]);
   const [area, setArea] = useState<ProjectArea>(defaultArea ?? "clientes");
   const [strategicPriority, setStrategicPriority] = useState<"normal" | "high" | "very_high">("normal");
+  const [visibility, setVisibility] = useState<"private" | "shared">("private");
   const [nameError, setNameError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -148,7 +154,7 @@ function CreateProjectModal({ open, onClose, defaultArea }: { open: boolean; onC
       utils.projects.strategicOverview.invalidate();
       utils.dashboard.recentProjects.invalidate();
       toast.success("Project created");
-      setName(""); setDescription(""); setColor(PROJECT_COLORS[0]); setArea("clientes"); setStrategicPriority("normal");
+      setName(""); setDescription(""); setColor(PROJECT_COLORS[0]); setArea("clientes"); setStrategicPriority("normal"); setVisibility("private");
       onClose();
     },
     onError: () => toast.error("Failed to create project"),
@@ -188,6 +194,10 @@ function CreateProjectModal({ open, onClose, defaultArea }: { open: boolean; onC
               </SelectContent>
             </Select>
           </div>
+          <div className="flex items-center gap-2">
+            <Checkbox id="proj-private" checked={visibility === "private"} onCheckedChange={(checked) => setVisibility(checked ? "private" : "shared")} />
+            <Label htmlFor="proj-private">Projeto privado</Label>
+          </div>
           <div className="space-y-1.5">
             <Label htmlFor="proj-desc">Description</Label>
             <Textarea id="proj-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
@@ -207,7 +217,7 @@ function CreateProjectModal({ open, onClose, defaultArea }: { open: boolean; onC
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button disabled={create.isPending} onClick={() => {
             if (!name.trim()) { setNameError("Enter a project name."); return; }
-            create.mutate({ name: name.trim(), description, color, area, strategicPriority });
+            create.mutate({ name: name.trim(), description, color, area, strategicPriority, visibility });
           }}>{create.isPending ? "Creating..." : "Create Project"}</Button>
         </DialogFooter>
       </DialogContent>
@@ -232,8 +242,8 @@ function ProjectCard({ project, hoursThisMonth, onSelect }: {
     <Card className="border shadow-sm hover:shadow-md transition-all group cursor-pointer" onClick={onSelect}>
       <CardContent className="p-3">
         <div className="flex items-start justify-between gap-2 mb-2">
-          <div className="h-8 w-8 rounded-lg flex items-center justify-center text-white font-semibold text-xs shrink-0"
-            style={{ background: project.color ?? "#6366f1" }}>
+          <div className="h-8 w-8 rounded-lg flex items-center justify-center font-semibold text-xs shrink-0"
+            style={{ background: project.color ?? BRAND.signal, color: foregroundOn(project.color ?? BRAND.signal) }}>
             {project.name.charAt(0).toUpperCase()}
           </div>
           <DropdownMenu>
@@ -245,10 +255,14 @@ function ProjectCard({ project, hoursThisMonth, onSelect }: {
             <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
               <DropdownMenuItem onClick={() => updateProject.mutate({ id: project.id, status: "completed" })}>Mark Complete</DropdownMenuItem>
               <DropdownMenuItem onClick={() => updateProject.mutate({ id: project.id, status: "archived" })}>Archive</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem className="text-destructive" onClick={() => deleteProject.mutate({ id: project.id })}>
-                <Trash2 className="mr-2 h-3.5 w-3.5" />Delete
-              </DropdownMenuItem>
+              {project.canDelete && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive" onClick={() => deleteProject.mutate({ id: project.id })}>
+                    <Trash2 className="mr-2 h-3.5 w-3.5" />Delete
+                  </DropdownMenuItem>
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -257,6 +271,14 @@ function ProjectCard({ project, hoursThisMonth, onSelect }: {
         <div className="flex items-center justify-between mt-2 gap-1">
           <div className="flex gap-1 flex-wrap">
             <Badge variant="secondary" className="text-[10px] h-4 px-1">{project.status}</Badge>
+            {project.accessibleBoardCount != null && (
+              <Badge variant="outline" className="text-[10px] h-4 px-1">
+                {project.accessibleBoardCount === 1 ? "1 board" : `${project.accessibleBoardCount} boards`}
+              </Badge>
+            )}
+            {project.visibility === "private" && (
+              <Badge variant="outline" className="text-[10px] h-4 px-1">Privado</Badge>
+            )}
             {hoursThisMonth != null && hoursThisMonth > 0 && (
               <Badge variant="outline" className="text-[10px] h-4 px-1 gap-0.5">
                 <Clock className="h-2.5 w-2.5" />{hoursThisMonth}h
@@ -540,6 +562,7 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          <ProjectLinks projectId={projectId} lead={lead ?? null} />
           <p className="text-xs text-muted-foreground">
             Cadastre valor e prazo de pagamento. O recebível aparecerá automaticamente no calendário na data de vencimento.
           </p>
@@ -690,6 +713,8 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
         </CardContent>
       </Card>
 
+      <ContractEventsCard projectId={projectId} />
+
       {summary && (
         <Collapsible defaultOpen={false}>
           <CollapsibleTrigger className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground">
@@ -778,6 +803,108 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
   );
 }
 
+function ProjectLinks({ projectId, lead }: { projectId: number; lead: { id: number; title: string; status: string } | null }) {
+  const [, setLocation] = useLocation();
+  const { data: contract } = trpc.crm.getContract.useQuery({ projectId });
+  const { data: proposals } = trpc.proposals.list.useQuery(lead ? { leadId: lead.id } : undefined);
+  const linked = (proposals ?? []).filter(({ proposal }) => proposal.projectId === projectId || (lead && proposal.leadId === lead.id));
+  const accepted = linked.find(({ proposal }) => proposal.status === "accepted") ?? linked[0];
+  if (!lead && !contract && !accepted) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <span className="text-muted-foreground">Vínculos:</span>
+      {lead && (
+        <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setLocation("/crm")}>
+          <Handshake className="h-3 w-3" /> Lead: {lead.title} ({LEAD_STATUS_LABELS[lead.status] ?? lead.status})
+        </Badge>
+      )}
+      {accepted && (
+        <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setLocation(`/proposals/${accepted.proposal.id}`)}>
+          <FileText className="h-3 w-3" /> Proposta {accepted.proposal.number}
+        </Badge>
+      )}
+      {contract && (
+        <Badge variant="outline" className="gap-1">
+          Contrato {fmtBrl(parseFloat(String(contract.totalValue)))} · {CONTRACT_STATUS_LABELS[contract.status] ?? contract.status}
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+const LEAD_STATUS_LABELS: Record<string, string> = {
+  prospecting: "Prospecção",
+  proposal: "Proposta",
+  negotiation: "Negociação",
+  won: "Ganho",
+  lost: "Perdido",
+};
+
+const CONTRACT_STATUS_LABELS: Record<string, string> = {
+  draft: "Rascunho",
+  active: "Ativo",
+  completed: "Concluído",
+  cancelled: "Cancelado",
+};
+
+function ContractEventsCard({ projectId }: { projectId: number }) {
+  const { data: contract } = trpc.crm.getContract.useQuery({ projectId });
+  const { data: events, isLoading } = trpc.calendar.listByContract.useQuery(
+    { contractId: contract?.id ?? 0 },
+    { enabled: !!contract }
+  );
+  const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<EditableCalendarEvent | null>(null);
+
+  return (
+    <Card className="border shadow-sm">
+      <CardHeader className="pb-2 flex flex-row items-center justify-between gap-2 space-y-0">
+        <CardTitle className="text-sm flex items-center gap-1">
+          <CalendarDays className="h-4 w-4" />
+          Eventos do contrato
+        </CardTitle>
+        {contract && (
+          <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={() => { setEditing(null); setOpen(true); }}>
+            <Plus className="h-3 w-3" /> Adicionar evento
+          </Button>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {!contract ? (
+          <p className="text-xs text-muted-foreground">
+            Este projeto ainda não tem contrato. Ele é criado ao adicionar um recebível ou ao aceitar uma proposta.
+          </p>
+        ) : isLoading ? (
+          <Skeleton className="h-12" />
+        ) : !events?.length ? (
+          <p className="text-xs text-muted-foreground">Nenhum evento. Reuniões, entregas e marcos aparecem também no calendário.</p>
+        ) : (
+          events.map((ev) => (
+            <button
+              key={ev.id}
+              type="button"
+              className="flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm hover:bg-muted/50"
+              onClick={() => { setEditing(ev); setOpen(true); }}
+            >
+              <span className="min-w-0 truncate">
+                <span className="font-medium">{ev.title}</span>
+                <span className="text-muted-foreground"> · {calendarEventKindLabel(ev.kind)}</span>
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                {format(new Date(ev.startAt), ev.allDay ? "dd/MM/yy" : "dd/MM/yy HH:mm")}
+                {ev.endAt ? ` – ${format(new Date(ev.endAt), ev.allDay ? "dd/MM/yy" : "HH:mm")}` : ""}
+              </span>
+            </button>
+          ))
+        )}
+      </CardContent>
+      {contract && (
+        <CalendarEventDialog open={open} onOpenChange={setOpen} event={editing} contractId={contract.id} />
+      )}
+    </Card>
+  );
+}
+
 function ProjectDetail({ projectId }: { projectId: number }) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
@@ -794,9 +921,11 @@ function ProjectDetail({ projectId }: { projectId: number }) {
   const showFaturamento = project ? isBillableProjectArea(project.area) && (canManage || isGlobalAdmin) : false;
   const defaultTab = useMemo(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab === "faturamento" && showFaturamento) return "faturamento";
+    if (tab === "faturamento" && !showFaturamento) return "boards";
+    if (tab === "hours" || tab === "team" || tab === "boards" || tab === "faturamento") return tab;
     return "boards";
   }, [showFaturamento]);
+  const tabParam = new URLSearchParams(window.location.search).get("tab");
   const { data: invites } = trpc.team.listInvites.useQuery({ projectId }, { enabled: canManage });
   const utils = trpc.useUtils();
   const createBoard = trpc.boards.create.useMutation({
@@ -820,7 +949,27 @@ function ProjectDetail({ projectId }: { projectId: number }) {
     createBoard.mutate({ projectId, name });
   };
 
+  const isOwner = currentUserRole === "owner" || project?.ownerId === user?.id;
+  const updateVisibility = trpc.projects.update.useMutation({
+    onSuccess: () => {
+      utils.projects.byId.invalidate({ id: projectId });
+      utils.projects.list.invalidate();
+      utils.projects.listByArea.invalidate();
+    },
+    onError: (err) => toast.error(err.message),
+  });
+
+  useEffect(() => {
+    if (tabParam) return;
+    if (boards?.length === 1) {
+      setLocation(`/projects/${projectId}/board/${boards[0].id}`);
+    }
+  }, [boards, tabParam, projectId, setLocation]);
+
   if (!project) return null;
+  if (!tabParam && (isLoading || boards?.length === 1)) {
+    return <div className="p-6"><Skeleton className="h-40" /></div>;
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -829,11 +978,22 @@ function ProjectDetail({ projectId }: { projectId: number }) {
         <span className="text-muted-foreground">/</span>
         <span className="text-sm font-medium">{project.name}</span>
         <Badge variant="outline" className="text-[10px]">{getProjectAreaLabel(project.area)}</Badge>
+        {project.visibility === "private" && <Badge variant="secondary" className="text-[10px]">Privado</Badge>}
+        {isOwner && (
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Checkbox
+              checked={project.visibility !== "shared"}
+              disabled={(members?.length ?? 0) > 1 || updateVisibility.isPending}
+              onCheckedChange={(checked) => updateVisibility.mutate({ id: projectId, visibility: checked ? "private" : "shared" })}
+            />
+            Privado
+          </label>
+        )}
       </div>
 
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded-xl flex items-center justify-center text-white font-semibold" style={{ background: project.color ?? "#6366f1" }}>
+          <div className="h-10 w-10 rounded-xl flex items-center justify-center font-semibold" style={{ background: project.color ?? BRAND.signal, color: foregroundOn(project.color ?? BRAND.signal) }}>
             {project.name.charAt(0).toUpperCase()}
           </div>
           <div>
@@ -990,15 +1150,12 @@ export default function Projects() {
               <Card
                 key={row.id}
                 className="border-0 shadow-sm hover:shadow-md transition-all cursor-pointer shrink-0 w-72"
-                onClick={() => {
-                  if (row.canonicalBoardId) setLocation(`/projects/${row.id}/board/${row.canonicalBoardId}`);
-                  else setLocation(`/projects/${row.id}`);
-                }}
+                onClick={() => setLocation(`/projects/${row.id}`)}
               >
                 <CardContent className="p-4 space-y-3">
                   <div className="flex items-start gap-2">
-                    <div className="h-8 w-8 rounded-lg flex items-center justify-center text-white text-xs font-semibold shrink-0"
-                      style={{ background: row.color ?? "#6366f1" }}>
+                    <div className="h-8 w-8 rounded-lg flex items-center justify-center text-xs font-semibold shrink-0"
+                      style={{ background: row.color ?? BRAND.signal, color: foregroundOn(row.color ?? BRAND.signal) }}>
                       {row.name.charAt(0).toUpperCase()}
                     </div>
                     <div className="min-w-0 flex-1">
@@ -1007,7 +1164,7 @@ export default function Projects() {
                         <Badge variant="secondary" className="text-[10px] h-4">{PRIORITY_LABEL[row.strategicPriority] ?? row.strategicPriority}</Badge>
                         <Badge variant="outline" className="text-[10px] h-4">{getProjectAreaLabel(row.area as ProjectArea)}</Badge>
                         {row.isBlocked && (
-                          <Badge variant="outline" className="text-[10px] h-4 border-amber-500 text-amber-700">
+                          <Badge variant="outline" className="text-[10px] h-4 border-data-3 text-data-3-ink">
                             <AlertCircle className="h-2.5 w-2.5 mr-0.5" />Bloqueado
                           </Badge>
                         )}
@@ -1078,7 +1235,13 @@ export default function Projects() {
                   <div className={view === "grid" ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2" : "space-y-2"}>
                     {areaProjects.map((project) => (
                       <ProjectCard key={project.id} project={project} hoursThisMonth={hoursSummary?.[project.id]}
-                        onSelect={() => setLocation(`/projects/${project.id}`)} />
+                        onSelect={() => {
+                          if (project.accessibleBoardCount === 1 && project.soleBoardId) {
+                            setLocation(`/projects/${project.id}/board/${project.soleBoardId}`);
+                          } else {
+                            setLocation(`/projects/${project.id}`);
+                          }
+                        }} />
                     ))}
                   </div>
                   <Button variant="ghost" size="sm" className="mt-2 h-7 text-xs" onClick={() => { setCreateArea(id); setShowCreate(true); }}>

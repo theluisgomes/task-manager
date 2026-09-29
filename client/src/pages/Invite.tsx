@@ -82,8 +82,8 @@ export default function InvitePage() {
       <div className="flex items-center justify-center min-h-screen p-6">
         <Card className="max-w-md w-full">
           <CardHeader className="text-center">
-            <div className="mx-auto h-12 w-12 rounded-xl bg-emerald-100 flex items-center justify-center mb-2">
-              <CheckCircle2 className="h-6 w-6 text-emerald-600" />
+            <div className="mx-auto h-12 w-12 rounded-xl bg-data-1/15 flex items-center justify-center mb-2">
+              <CheckCircle2 className="h-6 w-6 text-data-1-ink" />
             </div>
             <CardTitle>You&apos;re in!</CardTitle>
           </CardHeader>
@@ -91,6 +91,11 @@ export default function InvitePage() {
             <p className="text-sm text-muted-foreground text-center">
               You&apos;ve already joined <strong>{invite.projectName}</strong>.
             </p>
+            {"projects" in invite && invite.projects.length > 1 && (
+              <ul className="text-sm text-muted-foreground list-disc pl-5">
+                {invite.projects.map((project) => <li key={project.id}>{project.name}</li>)}
+              </ul>
+            )}
             <Button className="w-full" onClick={() => setLocation(`/projects/${invite.projectId}`)}>
               Go to project
             </Button>
@@ -105,12 +110,17 @@ export default function InvitePage() {
       <div className="flex items-center justify-center min-h-screen p-6">
         <Card className="max-w-md w-full">
           <CardHeader className="text-center">
-            <div className="mx-auto h-12 w-12 rounded-xl bg-primary flex items-center justify-center mb-2">
-              <FolderKanban className="h-6 w-6 text-primary-foreground" />
+            <div className="mx-auto h-12 w-12 rounded-xl bg-signal flex items-center justify-center mb-2">
+              <FolderKanban className="h-6 w-6 text-ink" />
             </div>
             <CardTitle>Join {invite.projectName}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {"projects" in invite && invite.projects.length > 1 && (
+              <ul className="text-sm list-disc pl-5">
+                {invite.projects.map((project) => <li key={project.id}>{project.name}</li>)}
+              </ul>
+            )}
             <p id="invite-signin-desc" className="text-sm text-muted-foreground text-center">
               Sign in as <strong>{invite.email}</strong> to accept this invitation.
             </p>
@@ -159,6 +169,11 @@ export default function InvitePage() {
           <CardTitle>Join {invite.projectName}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
+          {"projects" in invite && invite.projects.length > 1 && (
+            <ul className="text-sm list-disc pl-5">
+              {invite.projects.map((project) => <li key={project.id}>{project.name}</li>)}
+            </ul>
+          )}
           {emailMatches ? (
             <>
               <p className="text-sm text-muted-foreground">
