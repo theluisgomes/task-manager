@@ -1,6 +1,19 @@
 export type PaymentDueType = "fixed" | "relative";
 export type PaymentBaseEventType = "assinatura" | "entrega";
 
+/** Uses a stored override when it exists. `null` means the amount is still calculated. */
+export function appliedAmount(
+  override: string | number | null | undefined,
+  computed: number
+): { amount: number; adjusted: boolean; computed: number } {
+  if (override == null || override === "") {
+    return { amount: computed, adjusted: false, computed };
+  }
+  const amount = typeof override === "number" ? override : Number(override);
+  if (!Number.isFinite(amount)) return { amount: computed, adjusted: false, computed };
+  return { amount, adjusted: true, computed };
+}
+
 export function fmtBrl(value: number): string {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }

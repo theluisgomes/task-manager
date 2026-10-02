@@ -92,6 +92,13 @@
       "when": 1786800000000,
       "tag": "0012_visibility_invites_hours",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "5",
+      "when": 1787500000000,
+      "tag": "0013_contract_totals_work_dates",
+      "breakpoints": true
     }
   ]
 }

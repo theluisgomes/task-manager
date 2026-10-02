@@ -208,7 +208,7 @@ export const timesheets = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     userId: int("userId").notNull(),
     projectId: int("projectId").notNull(),
-    date: timestamp("date").notNull(),
+    date: date("date", { mode: "string" }).notNull(),
     hours: decimal("hours", { precision: 6, scale: 2 }).notNull(),
     description: varchar("description", { length: 512 }),
     hourlyRate: decimal("hourlyRate", { precision: 10, scale: 2 }),

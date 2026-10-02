@@ -1,5 +1,5 @@
 import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
-import { computeDueDateFromInput, formatLocalDate, parseLocalDate } from "../shared/billing";
+import { appliedAmount, computeDueDateFromInput, formatLocalDate, parseLocalDate } from "../shared/billing";
 import { hasMinRole } from "../shared/roles";
 import {
   nextProposalNumber,
@@ -27,13 +27,45 @@ import {
   userEmploymentContracts,
   users,
 } from "../drizzle/schema";
-import { getDb, getProjectById, getProjectIdsForUser, getTaskById } from "./db";
+import { getDb, getProjectById, getProjectIdsForUser, getTaskById, getUserById } from "./db";
 import { sendEmail } from "./email";
 
 function parseDecimal(value: string | null | undefined): number {
   if (value == null) return 0;
   const n = parseFloat(value);
   return Number.isNaN(n) ? 0 : n;
+}
+
+function workDate(value: string) {
+  return value.slice(0, 10);
+}
+
+function monthStart(now = new Date()) {
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-01`;
+}
+
+function formatWorkDate(date: Date | string) {
+  if (typeof date === "string") return date.slice(0, 10);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+async function loadEmploymentRates() {
+  const rows = await listEmploymentContracts();
+  const rates = new Map<number, number>();
+  for (const row of rows) {
+    if (rates.has(row.userId)) continue;
+    const rate = parseDecimal(row.hourlyRate);
+    if (rate) rates.set(row.userId, rate);
+  }
+  return rates;
+}
+
+function rateForHours(lineRate: string | null | undefined, userId: number, employmentRates: Map<number, number>) {
+  return parseDecimal(lineRate) || employmentRates.get(userId) || 0;
 }
 
 async function getManagedProjectIds(userId: number): Promise<Set<number>> {
@@ -157,7 +189,7 @@ export async function createTimesheet(data: {
   const result = await db.insert(timesheets).values({
     userId: data.userId,
     projectId: data.projectId,
-    date: new Date(data.date),
+    date: workDate(data.date),
     hours: data.hours.toString(),
     description: data.description ?? null,
     hourlyRate: data.hourlyRate?.toString() ?? null,
@@ -169,7 +201,7 @@ export async function updateTimesheet(id: number, data: Partial<{ date: string; 
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   const update: Record<string, unknown> = {};
-  if (data.date !== undefined) update.date = new Date(data.date);
+  if (data.date !== undefined) update.date = workDate(data.date);
   if (data.hours !== undefined) update.hours = data.hours.toString();
   if (data.description !== undefined) update.description = data.description;
   if (data.hourlyRate !== undefined) update.hourlyRate = data.hourlyRate.toString();
@@ -205,45 +237,33 @@ export async function getTimesheetsByProject(projectId: number) {
 export async function getProjectHoursSummary(projectIds: number[]) {
   const db = await getDb();
   if (!db || !projectIds.length) return {} as Record<number, number>;
-  const start = new Date();
-  start.setDate(1);
-  start.setHours(0, 0, 0, 0);
   const rows = await db
     .select({
       projectId: timesheets.projectId,
       total: sql<string>`COALESCE(SUM(${timesheets.hours}), 0)`,
     })
     .from(timesheets)
-    .where(and(inArray(timesheets.projectId, projectIds), gte(timesheets.date, start)))
+    .where(and(inArray(timesheets.projectId, projectIds), gte(timesheets.date, monthStart())))
     .groupBy(timesheets.projectId);
   return Object.fromEntries(rows.map((r) => [r.projectId, parseDecimal(r.total)]));
-}
-
-function workDateBounds(date: string) {
-  const [year, month, day] = date.split("-").map(Number);
-  const start = new Date(year, month - 1, day, 0, 0, 0, 0);
-  const end = new Date(year, month - 1, day, 23, 59, 59, 999);
-  return { start, end, noon: new Date(year, month - 1, day, 12, 0, 0, 0) };
-}
-
-function formatWorkDate(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
 }
 
 export async function getMyWeekTimesheet(userId: number, weekStart: string, weekEnd: string) {
   const db = await getDb();
   if (!db) return { projects: [], cells: {} as Record<string, number> };
-  const memberships = await db
-    .select({ id: projects.id, name: projects.name, color: projects.color })
-    .from(projectMembers)
-    .innerJoin(projects, eq(projectMembers.projectId, projects.id))
-    .where(and(eq(projectMembers.userId, userId), eq(projects.status, "active")))
-    .orderBy(projects.name);
-  const start = workDateBounds(weekStart).start;
-  const end = workDateBounds(weekEnd).end;
+  const user = await getUserById(userId);
+  const memberships = user?.role === "admin"
+    ? await db
+        .select({ id: projects.id, name: projects.name, color: projects.color })
+        .from(projects)
+        .where(eq(projects.status, "active"))
+        .orderBy(projects.name)
+    : await db
+        .select({ id: projects.id, name: projects.name, color: projects.color })
+        .from(projectMembers)
+        .innerJoin(projects, eq(projectMembers.projectId, projects.id))
+        .where(and(eq(projectMembers.userId, userId), eq(projects.status, "active")))
+        .orderBy(projects.name);
   const rows = memberships.length
     ? await db
         .select()
@@ -251,8 +271,8 @@ export async function getMyWeekTimesheet(userId: number, weekStart: string, week
         .where(and(
           eq(timesheets.userId, userId),
           inArray(timesheets.projectId, memberships.map((m) => m.id)),
-          gte(timesheets.date, start),
-          lte(timesheets.date, end),
+          gte(timesheets.date, workDate(weekStart)),
+          lte(timesheets.date, workDate(weekEnd)),
         ))
     : [];
   const cells: Record<string, number> = {};
@@ -263,39 +283,49 @@ export async function getMyWeekTimesheet(userId: number, weekStart: string, week
   return { projects: memberships, cells };
 }
 
-export async function upsertMyTimesheet(userId: number, projectId: number, date: string, hours: number) {
+export async function upsertMyTimesheet(
+  userId: number,
+  projectId: number,
+  date: string,
+  hours: number,
+  options?: { mode?: "set" | "add"; description?: string }
+) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
-  const { start, end, noon } = workDateBounds(date);
+  const mode = options?.mode ?? "set";
+  const day = workDate(date);
   const existing = await db
-    .select({ id: timesheets.id })
+    .select({
+      id: timesheets.id,
+      hours: timesheets.hours,
+      description: timesheets.description,
+      hourlyRate: timesheets.hourlyRate,
+    })
     .from(timesheets)
     .where(and(
       eq(timesheets.userId, userId),
       eq(timesheets.projectId, projectId),
-      gte(timesheets.date, start),
-      lte(timesheets.date, end),
+      eq(timesheets.date, day),
     ));
-  if (hours <= 0) {
-    if (existing.length) {
-      await db.delete(timesheets).where(inArray(timesheets.id, existing.map((row) => row.id)));
-    }
-    return { hours: 0 };
-  }
-  if (existing.length > 1) {
+  const current = existing.reduce((sum, row) => sum + parseDecimal(row.hours), 0);
+  const next = mode === "add" ? current + hours : hours;
+  const description = options?.description?.trim()
+    ? options.description.trim()
+    : existing.find((row) => row.description)?.description ?? null;
+  const hourlyRate = existing.find((row) => row.hourlyRate)?.hourlyRate ?? null;
+  if (existing.length) {
     await db.delete(timesheets).where(inArray(timesheets.id, existing.map((row) => row.id)));
   }
-  if (existing.length === 1) {
-    await db.update(timesheets).set({ hours: hours.toString(), date: noon }).where(eq(timesheets.id, existing[0].id));
-    return { hours };
-  }
+  if (next <= 0) return { hours: 0 };
   await db.insert(timesheets).values({
     userId,
     projectId,
-    date: noon,
-    hours: hours.toString(),
+    date: day,
+    hours: next.toString(),
+    description,
+    hourlyRate,
   });
-  return { hours };
+  return { hours: next };
 }
 
 // ─── Allocations ──────────────────────────────────────────────────────────────
@@ -428,16 +458,28 @@ export async function getContractByProject(projectId: number) {
   return direct;
 }
 
-export async function updateContract(id: number, data: Partial<{ totalValue: number; actualRevenue: number; actualCost: number; budgetedCost: number; status: "draft" | "active" | "completed" | "cancelled" }>) {
+export async function updateContract(id: number, data: Partial<{ totalValue: number; actualRevenue: number | null; actualCost: number | null; budgetedCost: number; status: "draft" | "active" | "completed" | "cancelled" }>) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   const update: Record<string, unknown> = {};
   if (data.totalValue !== undefined) update.totalValue = data.totalValue.toString();
-  if (data.actualRevenue !== undefined) update.actualRevenue = data.actualRevenue.toString();
-  if (data.actualCost !== undefined) update.actualCost = data.actualCost.toString();
+  if (data.actualRevenue !== undefined) update.actualRevenue = data.actualRevenue == null ? null : data.actualRevenue.toString();
+  if (data.actualCost !== undefined) update.actualCost = data.actualCost == null ? null : data.actualCost.toString();
   if (data.budgetedCost !== undefined) update.budgetedCost = data.budgetedCost.toString();
   if (data.status !== undefined) update.status = data.status;
   await db.update(contracts).set(update).where(eq(contracts.id, id));
+}
+
+/** Fills a blank contract total from its installments. A total already set by hand stays put. */
+export async function syncContractTotalFromPayments(contractId: number) {
+  const contract = await getContractById(contractId);
+  if (!contract || parseDecimal(contract.totalValue) > 0) return;
+  const payments = await getPaymentsByContract(contractId);
+  const total = payments
+    .filter((payment) => payment.status !== "cancelled")
+    .reduce((sum, payment) => sum + parseDecimal(payment.amount), 0);
+  if (total <= 0) return;
+  await updateContract(contractId, { totalValue: total });
 }
 
 export async function ensureProjectContract(projectId: number, userId: number) {
@@ -483,6 +525,7 @@ export async function createContractPayment(data: {
     daysAfterBase: dueType === "relative" ? (data.daysAfterBase ?? null) : null,
     dueDate: computedDueDate,
   });
+  await syncContractTotalFromPayments(data.contractId);
   return result[0].insertId;
 }
 
@@ -556,6 +599,7 @@ export async function updateContractPayment(id: number, data: Partial<{
   if (data.status !== undefined) update.status = data.status;
   if (data.paidAt !== undefined) update.paidAt = data.paidAt;
   await db.update(contractPayments).set(update).where(eq(contractPayments.id, id));
+  await syncContractTotalFromPayments(existing.contractId);
 }
 
 export async function getPaymentsByContract(contractId: number) {
@@ -576,12 +620,13 @@ export async function getAcquisitionCost(prospectProjectId: number, acquisitionO
   const conditions = [eq(timesheets.projectId, prospectProjectId)];
   if (acquisitionOwnerId) conditions.push(eq(timesheets.userId, acquisitionOwnerId));
   const rows = await db.select().from(timesheets).where(and(...conditions));
+  const employmentRates = await loadEmploymentRates();
   let hours = 0;
   let cost = 0;
   for (const row of rows) {
     const h = parseDecimal(row.hours);
     hours += h;
-    cost += h * parseDecimal(row.hourlyRate);
+    cost += h * rateForHours(row.hourlyRate, row.userId, employmentRates);
   }
   return { hours, cost };
 }
@@ -589,34 +634,46 @@ export async function getAcquisitionCost(prospectProjectId: number, acquisitionO
 export async function getProjectFinanceSummary(projectId: number) {
   const contract = await getContractByProject(projectId);
   const costRows = await getTimesheetsByProject(projectId);
+  const employmentRates = await loadEmploymentRates();
+  let totalHours = 0;
   let computedActualCost = 0;
-  for (const r of costRows) computedActualCost += parseDecimal(r.hours) * parseDecimal(r.hourlyRate);
-  if (!contract) {
-    return { budgetedRevenue: 0, actualRevenue: 0, budgetedCost: 0, actualCost: computedActualCost, budgetedProfit: 0, actualProfit: -computedActualCost };
+  for (const r of costRows) {
+    const hours = parseDecimal(r.hours);
+    totalHours += hours;
+    computedActualCost += hours * rateForHours(r.hourlyRate, r.userId, employmentRates);
   }
-  const payments = await getPaymentsByContract(contract.id);
-  const budgetedRevenue = parseDecimal(contract.totalValue);
-  const budgetedCost = parseDecimal(contract.budgetedCost);
-  const computedActualRevenue = payments.filter((p) => p.paymentReceived).reduce((s, p) => s + parseDecimal(p.amount), 0);
-  const actualRevenue = contract.actualRevenue != null ? parseDecimal(contract.actualRevenue) : computedActualRevenue;
-  const actualCost = contract.actualCost != null ? parseDecimal(contract.actualCost) : computedActualCost;
+  const payments = contract ? await getPaymentsByContract(contract.id) : [];
+  const openPayments = payments.filter((payment) => payment.status !== "cancelled");
+  const paymentTotal = openPayments.reduce((sum, payment) => sum + parseDecimal(payment.amount), 0);
+  const computedActualRevenue = openPayments
+    .filter((payment) => payment.paymentReceived)
+    .reduce((sum, payment) => sum + parseDecimal(payment.amount), 0);
+  const revenue = appliedAmount(contract?.actualRevenue, computedActualRevenue);
+  const cost = appliedAmount(contract?.actualCost, computedActualCost);
+  const budgetedRevenue = contract ? parseDecimal(contract.totalValue) || paymentTotal : 0;
+  const budgetedCost = contract ? parseDecimal(contract.budgetedCost) : 0;
   return {
     budgetedRevenue,
-    actualRevenue,
+    actualRevenue: revenue.amount,
+    computedActualRevenue,
+    revenueAdjusted: revenue.adjusted,
     budgetedCost,
-    actualCost,
+    actualCost: cost.amount,
+    computedActualCost,
+    costAdjusted: cost.adjusted,
     budgetedProfit: budgetedRevenue - budgetedCost,
-    actualProfit: actualRevenue - actualCost,
+    actualProfit: revenue.amount - cost.amount,
+    totalHours,
   };
 }
 
 export async function updateProjectFinance(
   projectId: number,
   userId: number,
-  data: { budgetedRevenue?: number; actualRevenue?: number; actualCost?: number }
+  data: { budgetedRevenue?: number; actualRevenue?: number | null; actualCost?: number | null }
 ) {
   const contractId = await ensureProjectContract(projectId, userId);
-  const update: Partial<{ totalValue: number; actualRevenue: number; actualCost: number }> = {};
+  const update: Partial<{ totalValue: number; actualRevenue: number | null; actualCost: number | null }> = {};
   if (data.budgetedRevenue !== undefined) update.totalValue = data.budgetedRevenue;
   if (data.actualRevenue !== undefined) update.actualRevenue = data.actualRevenue;
   if (data.actualCost !== undefined) update.actualCost = data.actualCost;
@@ -624,7 +681,11 @@ export async function updateProjectFinance(
 }
 
 export async function getFinanceSummaryForUser(userId: number, isAdmin: boolean) {
-  const projectIds = await getProjectIdsForUser(userId, isAdmin);
+  let projectIds = await getProjectIdsForUser(userId, isAdmin);
+  if (!isAdmin) {
+    const managed = await getManagedProjectIds(userId);
+    projectIds = projectIds.filter((id) => managed.has(id));
+  }
   const summaries = await Promise.all(
     projectIds.map(async (id) => {
       const [project, summary] = await Promise.all([getProjectById(id), getProjectFinanceSummary(id)]);
@@ -668,17 +729,39 @@ export async function getTeamUtilization(userId: number, isAdmin: boolean) {
       userId: timesheets.userId,
       projectId: timesheets.projectId,
       totalHours: sql<string>`COALESCE(SUM(${timesheets.hours}), 0)`,
+      userName: users.name,
+      projectName: projects.name,
     })
     .from(timesheets)
+    .leftJoin(users, eq(timesheets.userId, users.id))
+    .leftJoin(projects, eq(timesheets.projectId, projects.id))
     .where(inArray(timesheets.projectId, projectIds))
-    .groupBy(timesheets.userId, timesheets.projectId);
-  const workedMap = new Map(worked.map((w) => [`${w.userId}-${w.projectId}`, parseDecimal(w.totalHours)]));
-  return allocations.map((a) => ({
-    ...a,
+    .groupBy(timesheets.userId, timesheets.projectId, users.name, projects.name);
+  const workedMap = new Map(worked.map((w) => [`${w.userId}-${w.projectId}`, w]));
+  const rows = allocations.map((a) => ({
+    userId: a.userId,
+    projectId: a.projectId,
+    userName: a.userName,
+    projectName: a.projectName,
     availableHours: parseDecimal(a.availableHours),
     hourlyRate: parseDecimal(a.hourlyRate),
-    workedHours: workedMap.get(`${a.userId}-${a.projectId}`) ?? 0,
+    workedHours: parseDecimal(workedMap.get(`${a.userId}-${a.projectId}`)?.totalHours),
   }));
+  const covered = new Set(rows.map((row) => `${row.userId}-${row.projectId}`));
+  for (const entry of worked) {
+    const key = `${entry.userId}-${entry.projectId}`;
+    if (covered.has(key)) continue;
+    rows.push({
+      userId: entry.userId,
+      projectId: entry.projectId,
+      userName: entry.userName,
+      projectName: entry.projectName,
+      availableHours: 0,
+      hourlyRate: 0,
+      workedHours: parseDecimal(entry.totalHours),
+    });
+  }
+  return rows;
 }
 
 export type CalendarEventType =
@@ -899,22 +982,47 @@ export async function listCalendarEventsByContract(contractId: number) {
   return db.select().from(calendarEvents).where(eq(calendarEvents.contractId, contractId)).orderBy(calendarEvents.startAt);
 }
 
+async function completeDeliveryPayments(contractId: number, eventStart: Date) {
+  const payments = await getPaymentsByContract(contractId);
+  const day = formatLocalDate(eventStart);
+  for (const payment of payments) {
+    if (payment.status === "cancelled" || payment.baseEventType !== "entrega") continue;
+    if (payment.deliveryCompleted && payment.baseEventDate) continue;
+    await updateContractPayment(payment.id, {
+      deliveryCompleted: true,
+      ...(payment.baseEventDate
+        ? {}
+        : {
+            dueType: "relative",
+            baseEventType: "entrega",
+            baseEventDate: day,
+            daysAfterBase: payment.daysAfterBase ?? undefined,
+          }),
+    });
+  }
+}
+
 export async function createCalendarEvent(data: CalendarEventInput & { contractId: number; projectId: number | null; createdById: number }) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
+  const values = calendarEventValues(data);
   const result = await db.insert(calendarEvents).values({
-    ...calendarEventValues(data),
+    ...values,
     contractId: data.contractId,
     projectId: data.projectId,
     createdById: data.createdById,
   });
+  if (values.kind === "entrega") await completeDeliveryPayments(data.contractId, values.startAt);
   return result[0].insertId;
 }
 
 export async function updateCalendarEvent(id: number, data: CalendarEventInput) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
-  await db.update(calendarEvents).set(calendarEventValues(data)).where(eq(calendarEvents.id, id));
+  const existing = await getCalendarEventById(id);
+  const values = calendarEventValues(data);
+  await db.update(calendarEvents).set(values).where(eq(calendarEvents.id, id));
+  if (values.kind === "entrega" && existing) await completeDeliveryPayments(existing.contractId, values.startAt);
 }
 
 export async function deleteCalendarEvent(id: number) {
@@ -1075,15 +1183,22 @@ export async function getStrategicOverview(userId: number, isAdmin: boolean, lim
   const timesheetAgg = await db
     .select({
       projectId: timesheets.projectId,
+      userId: timesheets.userId,
       totalHours: sql<string>`COALESCE(SUM(${timesheets.hours}), 0)`,
-      totalCost: sql<string>`COALESCE(SUM(${timesheets.hours} * COALESCE(${timesheets.hourlyRate}, 0)), 0)`,
+      lineRate: sql<string | null>`MAX(${timesheets.hourlyRate})`,
     })
     .from(timesheets)
     .where(inArray(timesheets.projectId, topIds))
-    .groupBy(timesheets.projectId);
-  const hoursByProject = new Map(
-    timesheetAgg.map((r) => [r.projectId, { hours: parseDecimal(r.totalHours), cost: parseDecimal(r.totalCost) }])
-  );
+    .groupBy(timesheets.projectId, timesheets.userId);
+  const employmentRates = await loadEmploymentRates();
+  const hoursByProject = new Map<number, { hours: number; cost: number }>();
+  for (const row of timesheetAgg) {
+    const current = hoursByProject.get(row.projectId) ?? { hours: 0, cost: 0 };
+    const hours = parseDecimal(row.totalHours);
+    current.hours += hours;
+    current.cost += hours * rateForHours(row.lineRate, row.userId, employmentRates);
+    hoursByProject.set(row.projectId, current);
+  }
 
   const allocationRates = await db
     .select({
@@ -1127,7 +1242,10 @@ export async function getStrategicOverview(userId: number, isAdmin: boolean, lim
 
     const contract = contractByProject.get(project.id);
     const contractPaymentsList = contract ? paymentsByContract.get(contract.id) ?? [] : [];
-    const projectedRevenue = contract ? parseDecimal(contract.totalValue) : 0;
+    const paymentTotal = contractPaymentsList
+      .filter((payment) => payment.status !== "cancelled")
+      .reduce((sum, payment) => sum + parseDecimal(payment.amount), 0);
+    const projectedRevenue = contract ? parseDecimal(contract.totalValue) || paymentTotal : 0;
     const received = contractPaymentsList
       .filter((p) => p.paymentReceived)
       .reduce((s, p) => s + parseDecimal(p.amount), 0);
@@ -1196,12 +1314,14 @@ export async function getContractPlReport(userId: number, isAdmin: boolean) {
   const contractsReport = rows.map(({ contract, projectName, projectArea }) => {
     const projectSummary = summaries.projects.find((p) => p.projectId === contract.projectId);
     const plist = paymentsByContract.get(contract.id) ?? [];
-    const received = plist.filter((p) => p.paymentReceived).reduce((s, p) => s + parseDecimal(p.amount), 0);
-    const pending = plist.filter((p) => !p.paymentReceived).reduce((s, p) => s + parseDecimal(p.amount), 0);
-    const budgetedRevenue = parseDecimal(contract.totalValue);
-    const actualRevenue = parseDecimal(contract.actualRevenue) || received;
+    const received = plist.filter((p) => p.paymentReceived && p.status !== "cancelled").reduce((s, p) => s + parseDecimal(p.amount), 0);
+    const pending = plist.filter((p) => !p.paymentReceived && p.status !== "cancelled").reduce((s, p) => s + parseDecimal(p.amount), 0);
+    const budgetedRevenue = parseDecimal(contract.totalValue) || received + pending;
+    const revenue = appliedAmount(contract.actualRevenue, received);
+    const cost = appliedAmount(contract.actualCost, projectSummary?.computedActualCost ?? 0);
     const budgetedCost = parseDecimal(contract.budgetedCost) || (projectSummary?.budgetedCost ?? 0);
-    const actualCost = parseDecimal(contract.actualCost) || (projectSummary?.actualCost ?? 0);
+    const actualRevenue = revenue.amount;
+    const actualCost = cost.amount;
     return {
       id: contract.id,
       title: contract.title,
@@ -1212,8 +1332,11 @@ export async function getContractPlReport(userId: number, isAdmin: boolean) {
       status: contract.status,
       budgetedRevenue,
       actualRevenue,
+      revenueAdjusted: revenue.adjusted,
       budgetedCost,
       actualCost,
+      costAdjusted: cost.adjusted,
+      computedActualCost: projectSummary?.computedActualCost ?? 0,
       budgetedProfit: budgetedRevenue - budgetedCost,
       actualProfit: actualRevenue - actualCost,
       received,

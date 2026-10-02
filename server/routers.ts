@@ -89,7 +89,6 @@ import {
   createContractPayment,
   createEmploymentContract,
   createLead,
-  createTimesheet,
   deleteAllocation,
   deleteEmploymentContract,
   deleteTimesheet,
@@ -979,7 +978,7 @@ const timesheetsRouter = router({
   listByProject: protectedProcedure
     .input(z.object({ projectId: z.number() }))
     .query(async ({ input, ctx }) => {
-      await requireProjectAccess(ctx.user.id, input.projectId);
+      await requireProjectAccess(ctx.user.id, input.projectId, "member", isGlobalAdmin(ctx.user.role));
       return getTimesheetsByProject(input.projectId);
     }),
 
@@ -992,8 +991,11 @@ const timesheetsRouter = router({
       hourlyRate: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await requireProjectAccess(ctx.user.id, input.projectId);
-      return createTimesheet({ ...input, userId: ctx.user.id });
+      await requireProjectAccess(ctx.user.id, input.projectId, "member", isGlobalAdmin(ctx.user.role));
+      return upsertMyTimesheet(ctx.user.id, input.projectId, input.date, input.hours, {
+        mode: "add",
+        description: input.description,
+      });
     }),
 
   update: protectedProcedure
@@ -1032,10 +1034,8 @@ const timesheetsRouter = router({
       hours: z.number().min(0),
     }))
     .mutation(async ({ input, ctx }) => {
-      await requireProjectAccess(ctx.user.id, input.projectId, "member", false);
-      const role = await getProjectMemberRole(ctx.user.id, input.projectId);
-      if (!role) forbidden();
-      return upsertMyTimesheet(ctx.user.id, input.projectId, input.date, input.hours);
+      await requireProjectAccess(ctx.user.id, input.projectId, "member", isGlobalAdmin(ctx.user.role));
+      return upsertMyTimesheet(ctx.user.id, input.projectId, input.date, input.hours, { mode: "set" });
     }),
 });
 
@@ -1509,10 +1509,9 @@ const financeRouter = router({
     getFinanceSummaryForUser(ctx.user.id, ctx.user.role === "admin")
   ),
 
-  contractPl: protectedProcedure.query(({ ctx }) => {
-    assertFinanceAdmin(ctx.user.role);
-    return getContractPlReport(ctx.user.id, true);
-  }),
+  contractPl: protectedProcedure.query(({ ctx }) =>
+    getContractPlReport(ctx.user.id, ctx.user.role === "admin")
+  ),
 
   teamUtilization: protectedProcedure.query(({ ctx }) =>
     getTeamUtilization(ctx.user.id, ctx.user.role === "admin")
@@ -1545,11 +1544,11 @@ const financeRouter = router({
     .input(z.object({
       projectId: z.number(),
       budgetedRevenue: z.number().optional(),
-      actualRevenue: z.number().optional(),
-      actualCost: z.number().optional(),
+      actualRevenue: z.number().nullable().optional(),
+      actualCost: z.number().nullable().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      assertFinanceAdmin(ctx.user.role);
+      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
       const { projectId, ...data } = input;
       return updateProjectFinance(projectId, ctx.user.id, data);
     }),

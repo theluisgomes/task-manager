@@ -383,23 +383,38 @@ function ProjectHoursTab({ projectId }: { projectId: number }) {
   const [hours, setHours] = useState("");
   const [description, setDescription] = useState("");
   const utils = trpc.useUtils();
-  const { data: entries, isLoading } = trpc.timesheets.listByProject.useQuery({ projectId });
+  const { data: entries, isLoading, error } = trpc.timesheets.listByProject.useQuery({ projectId });
+  const invalidateHours = () => {
+    utils.timesheets.listByProject.invalidate({ projectId });
+    utils.timesheets.myWeek.invalidate();
+    utils.projects.hoursSummary.invalidate();
+    utils.finance.summary.invalidate();
+    utils.finance.teamUtilization.invalidate();
+  };
   const log = trpc.timesheets.log.useMutation({
     onSuccess: () => {
-      utils.timesheets.listByProject.invalidate({ projectId });
-      utils.projects.hoursSummary.invalidate();
+      invalidateHours();
       setHours(""); setDescription("");
-      toast.success("Hours logged");
+      toast.success("Horas lançadas");
     },
+    onError: (err) => toast.error(err.message),
   });
   const remove = trpc.timesheets.delete.useMutation({
-    onSuccess: () => { utils.timesheets.listByProject.invalidate({ projectId }); utils.projects.hoursSummary.invalidate(); },
+    onSuccess: () => invalidateHours(),
+    onError: (err) => toast.error(err.message),
   });
+  const totalHours = (entries ?? []).reduce((sum, entry) => sum + Number(entry.hours || 0), 0);
 
   return (
     <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          As horas da aba Horas entram nesta lista. Cada pessoa tem um lançamento por dia.
+        </p>
+        <p className="text-sm font-semibold tabular-nums shrink-0">{totalHours.toFixed(1)}h no total</p>
+      </div>
       <Card className="border shadow-sm">
-        <CardHeader className="pb-2"><CardTitle className="text-sm">Log hours</CardTitle></CardHeader>
+        <CardHeader className="pb-2"><CardTitle className="text-sm">Lançar horas</CardTitle></CardHeader>
         <CardContent className="flex flex-wrap gap-3 items-end">
           <div><Label className="text-xs">Date</Label><Input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-8 w-36" /></div>
           <div><Label className="text-xs">Hours</Label><Input type="number" step="0.25" min="0.25" value={hours} onChange={(e) => setHours(e.target.value)} className="h-8 w-24" /></div>
@@ -407,13 +422,15 @@ function ProjectHoursTab({ projectId }: { projectId: number }) {
           <Button size="sm" disabled={log.isPending || !hours} onClick={() => log.mutate({ projectId, date, hours: parseFloat(hours), description: description || undefined })}>Add</Button>
         </CardContent>
       </Card>
-      {isLoading ? <Skeleton className="h-32" /> : (
+      {error ? (
+        <p className="text-sm text-destructive">{error.message}</p>
+      ) : isLoading ? <Skeleton className="h-32" /> : (
         <Table>
           <TableHeader><TableRow><TableHead>Date</TableHead><TableHead>User</TableHead><TableHead>Hours</TableHead><TableHead>Description</TableHead><TableHead /></TableRow></TableHeader>
           <TableBody>
             {entries?.map((e) => (
               <TableRow key={e.id}>
-                <TableCell className="text-sm">{format(new Date(e.date), "dd/MM/yyyy")}</TableCell>
+                <TableCell className="text-sm">{formatSheetDate(e.date)}</TableCell>
                 <TableCell className="text-sm">{e.userName ?? "—"}</TableCell>
                 <TableCell className="text-sm">{e.hours}</TableCell>
                 <TableCell className="text-sm text-muted-foreground">{e.description ?? "—"}</TableCell>
@@ -422,7 +439,7 @@ function ProjectHoursTab({ projectId }: { projectId: number }) {
                 )}</TableCell>
               </TableRow>
             ))}
-            {!entries?.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground text-sm py-8">No hours logged yet</TableCell></TableRow>}
+            {!entries?.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground text-sm py-8">Nenhuma hora lançada</TableCell></TableRow>}
           </TableBody>
         </Table>
       )}
@@ -562,7 +579,7 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <ProjectLinks projectId={projectId} lead={lead ?? null} />
+          <ProjectChain projectId={projectId} area={area} />
           <p className="text-xs text-muted-foreground">
             Cadastre valor e prazo de pagamento. O recebível aparecerá automaticamente no calendário na data de vencimento.
           </p>
@@ -724,16 +741,17 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
           <CollapsibleContent className="mt-3">
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {[
-                { label: "Receita orçada", value: summary.budgetedRevenue },
-                { label: "Receita real", value: summary.actualRevenue },
-                { label: "Custo orçado", value: summary.budgetedCost },
-                { label: "Custo real", value: summary.actualCost },
-                { label: "Lucro orçado", value: summary.budgetedProfit },
-                { label: "Lucro real", value: summary.actualProfit },
+                { label: "Receita orçada", value: summary.budgetedRevenue, hint: "Contrato ou soma das parcelas" },
+                { label: "Receita real", value: summary.actualRevenue, hint: summary.revenueAdjusted ? `Ajustado · calculado ${fmtBrl(summary.computedActualRevenue)}` : "Calculado pelos recebimentos" },
+                { label: "Custo orçado", value: summary.budgetedCost, hint: "" },
+                { label: "Custo real", value: summary.actualCost, hint: summary.costAdjusted ? `Ajustado · calculado ${fmtBrl(summary.computedActualCost)}` : "Calculado pelas horas" },
+                { label: "Lucro orçado", value: summary.budgetedProfit, hint: "" },
+                { label: "Lucro real", value: summary.actualProfit, hint: "" },
               ].map((item) => (
                 <Card key={item.label} className="border shadow-sm"><CardContent className="p-3">
                   <p className="text-xs text-muted-foreground">{item.label}</p>
                   <p className="text-lg font-semibold">{fmtBrl(item.value)}</p>
+                  {item.hint && <p className="text-[10px] text-muted-foreground mt-1">{item.hint}</p>}
                 </CardContent></Card>
               ))}
             </div>
@@ -803,31 +821,53 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
   );
 }
 
-function ProjectLinks({ projectId, lead }: { projectId: number; lead: { id: number; title: string; status: string } | null }) {
+function formatSheetDate(value: string | Date) {
+  if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}/.test(value)) {
+    const [year, month, day] = value.slice(0, 10).split("-");
+    return `${day}/${month}/${year}`;
+  }
+  return format(new Date(value), "dd/MM/yyyy");
+}
+
+function ProjectChain({ projectId, area }: { projectId: number; area: ProjectArea }) {
   const [, setLocation] = useLocation();
-  const { data: contract } = trpc.crm.getContract.useQuery({ projectId });
-  const { data: proposals } = trpc.proposals.list.useQuery(lead ? { leadId: lead.id } : undefined);
-  const linked = (proposals ?? []).filter(({ proposal }) => proposal.projectId === projectId || (lead && proposal.leadId === lead.id));
+  const billable = isBillableProjectArea(area);
+  const { data: lead } = trpc.crm.getLead.useQuery({ projectId });
+  const { data: contract } = trpc.crm.getContract.useQuery({ projectId }, { enabled: billable });
+  const { data: proposals } = trpc.proposals.list.useQuery(
+    lead ? { leadId: lead.id } : undefined,
+    { enabled: !!lead }
+  );
+  const { data: hoursSummary } = trpc.projects.hoursSummary.useQuery();
+  const linked = (proposals ?? []).filter(({ proposal }) => proposal.projectId === projectId || proposal.leadId === lead?.id);
   const accepted = linked.find(({ proposal }) => proposal.status === "accepted") ?? linked[0];
-  if (!lead && !contract && !accepted) return null;
+  const monthHours = hoursSummary?.[projectId] ?? 0;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
-      <span className="text-muted-foreground">Vínculos:</span>
-      {lead && (
+      {lead ? (
         <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setLocation("/crm")}>
           <Handshake className="h-3 w-3" /> Lead: {lead.title} ({LEAD_STATUS_LABELS[lead.status] ?? lead.status})
         </Badge>
+      ) : (
+        <Badge variant="outline">Sem lead</Badge>
       )}
-      {accepted && (
+      {accepted ? (
         <Badge variant="secondary" className="cursor-pointer gap-1" onClick={() => setLocation(`/proposals/${accepted.proposal.id}`)}>
           <FileText className="h-3 w-3" /> Proposta {accepted.proposal.number}
         </Badge>
+      ) : (
+        <Badge variant="outline">Sem proposta</Badge>
       )}
-      {contract && (
+      {billable && contract ? (
         <Badge variant="outline" className="gap-1">
           Contrato {fmtBrl(parseFloat(String(contract.totalValue)))} · {CONTRACT_STATUS_LABELS[contract.status] ?? contract.status}
         </Badge>
-      )}
+      ) : billable ? (
+        <Badge variant="outline">Sem contrato</Badge>
+      ) : null}
+      <Badge variant="outline" className="gap-1">
+        <Clock className="h-3 w-3" /> Horas do mês: {monthHours}h
+      </Badge>
     </div>
   );
 }
@@ -999,6 +1039,9 @@ function ProjectDetail({ projectId }: { projectId: number }) {
           <div>
             <h1 className="text-xl font-semibold">{project.name}</h1>
             {project.description && <p className="text-sm text-muted-foreground">{project.description}</p>}
+            <div className="mt-2">
+              <ProjectChain projectId={projectId} area={project.area} />
+            </div>
             {members && members.length > 0 && (
               <div className="flex items-center gap-2 mt-1">
                 <MemberAvatars members={members.map((m) => ({ userId: m.userId, name: m.name, email: m.email }))} />

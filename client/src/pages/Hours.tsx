@@ -39,6 +39,8 @@ export default function HoursPage() {
       utils.timesheets.myWeek.invalidate({ weekStart, weekEnd });
       utils.projects.hoursSummary.invalidate();
       utils.timesheets.listByProject.invalidate();
+      utils.finance.summary.invalidate();
+      utils.finance.teamUtilization.invalidate();
     },
     onError: (err) => toast.error(err.message),
   });

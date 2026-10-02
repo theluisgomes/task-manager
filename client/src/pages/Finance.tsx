@@ -62,7 +62,7 @@ import {
   Download,
 } from "lucide-react";
 import { toast } from "sonner";
-import { getProjectAreaLabel } from "@shared/projectAreas";
+import { getProjectAreaLabel, isBillableProjectArea } from "@shared/projectAreas";
 import { fmtBrl } from "@shared/billing";
 import { DATA_COLORS } from "@/lib/brand";
 
@@ -659,6 +659,15 @@ function OperationalSummaryTab() {
   if (isLoading) return <Skeleton className="h-48" />;
   const t = data?.totals;
   if (!t) return null;
+  if (!data?.projects.length) {
+    return (
+      <Card className="border shadow-sm">
+        <CardContent className="py-12 text-center text-sm text-muted-foreground">
+          Nenhum projeto sob a sua gestão. O resumo mostra contratos e horas dos projetos em que você é owner ou admin.
+        </CardContent>
+      </Card>
+    );
+  }
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -670,6 +679,28 @@ function OperationalSummaryTab() {
         <KpiStatCard label="Lucro real" value={t.actualProfit} icon={TrendingUp} color="bg-data-2/15 text-foreground" />
       </div>
     </div>
+  );
+}
+
+function MoneySource({
+  adjusted,
+  computed,
+  onUseCalculated,
+  disabled,
+}: {
+  adjusted: boolean;
+  computed: number;
+  onUseCalculated: () => void;
+  disabled?: boolean;
+}) {
+  if (!adjusted) return <p className="text-[10px] text-muted-foreground mt-1">Calculado</p>;
+  return (
+    <p className="text-[10px] text-muted-foreground mt-1">
+      Ajustado · calculado {fmtBrl(computed)}{" "}
+      <button type="button" className="underline disabled:opacity-50" disabled={disabled} onClick={onUseCalculated}>
+        usar calculado
+      </button>
+    </p>
   );
 }
 
@@ -759,7 +790,11 @@ function ProjectsFinanceTab() {
 
   if (isLoading) return <Skeleton className="h-48" />;
 
-  const saveField = (projectId: number, field: "budgetedRevenue" | "actualRevenue" | "actualCost", value: number) => {
+  const saveField = (
+    projectId: number,
+    field: "budgetedRevenue" | "actualRevenue" | "actualCost",
+    value: number | null
+  ) => {
     updateFinance.mutate({ projectId, [field]: value });
   };
 
@@ -768,6 +803,7 @@ function ProjectsFinanceTab() {
       <TableHeader>
         <TableRow>
           <TableHead>Project</TableHead><TableHead>Area</TableHead>
+          <TableHead>Horas</TableHead>
           <TableHead>Rec. orçada</TableHead><TableHead>Rec. real</TableHead>
           <TableHead>Custo real</TableHead><TableHead>Lucro real</TableHead>
           <TableHead>Origem</TableHead>
@@ -782,25 +818,38 @@ function ProjectsFinanceTab() {
               </Link>
             </TableCell>
             <TableCell className="text-sm">{getProjectAreaLabel(p.area as any)}</TableCell>
+            <TableCell className="text-sm tabular-nums">{(p.totalHours ?? 0).toFixed(1)}h</TableCell>
             <TableCell>
               <EditableMoneyCell
                 value={p.budgetedRevenue}
                 onSave={(v) => saveField(p.projectId, "budgetedRevenue", v)}
-                disabled={updateFinance.isPending}
+                disabled={!isBillableProjectArea(p.area) || updateFinance.isPending}
               />
             </TableCell>
             <TableCell>
               <EditableMoneyCell
                 value={p.actualRevenue}
                 onSave={(v) => saveField(p.projectId, "actualRevenue", v)}
-                disabled={updateFinance.isPending}
+                disabled={!isBillableProjectArea(p.area) || updateFinance.isPending}
+              />
+              <MoneySource
+                adjusted={p.revenueAdjusted}
+                computed={p.computedActualRevenue}
+                disabled={!isBillableProjectArea(p.area) || updateFinance.isPending}
+                onUseCalculated={() => saveField(p.projectId, "actualRevenue", null)}
               />
             </TableCell>
             <TableCell>
               <EditableMoneyCell
                 value={p.actualCost}
                 onSave={(v) => saveField(p.projectId, "actualCost", v)}
-                disabled={updateFinance.isPending}
+                disabled={!isBillableProjectArea(p.area) || updateFinance.isPending}
+              />
+              <MoneySource
+                adjusted={p.costAdjusted}
+                computed={p.computedActualCost}
+                disabled={!isBillableProjectArea(p.area) || updateFinance.isPending}
+                onUseCalculated={() => saveField(p.projectId, "actualCost", null)}
               />
             </TableCell>
             <TableCell className="text-sm tabular-nums font-medium">
@@ -820,12 +869,21 @@ function ProjectsFinanceTab() {
             </TableCell>
           </TableRow>
         ))}
+        {!data?.projects.length && (
+          <TableRow>
+            <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+              Nenhum projeto sob a sua gestão
+            </TableCell>
+          </TableRow>
+        )}
       </TableBody>
     </Table>
   );
 }
 
 function ContractPlTab() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const { data, isLoading } = trpc.finance.contractPl.useQuery();
   const sendReminders = trpc.finance.sendPaymentReminders.useMutation({
     onSuccess: (r) => toast.success(`Lembretes: ${r.sent} enviados, ${r.skipped} ignorados → ${r.to}`),
@@ -834,12 +892,14 @@ function ContractPlTab() {
   if (isLoading) return <Skeleton className="h-48" />;
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <Button size="sm" variant="outline" className="text-xs" disabled={sendReminders.isPending}
-          onClick={() => sendReminders.mutate()}>
-          Enviar e-mails de vencimento
-        </Button>
-      </div>
+      {isAdmin && (
+        <div className="flex justify-end">
+          <Button size="sm" variant="outline" className="text-xs" disabled={sendReminders.isPending}
+            onClick={() => sendReminders.mutate()}>
+            Enviar e-mails de vencimento
+          </Button>
+        </div>
+      )}
       <Table>
         <TableHeader>
           <TableRow>
@@ -867,9 +927,9 @@ function ContractPlTab() {
                 ) : "—"}
               </TableCell>
               <TableCell className="text-sm">{fmtBrl(c.budgetedRevenue)}</TableCell>
-              <TableCell className="text-sm">{fmtBrl(c.actualRevenue)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.actualRevenue)}{c.revenueAdjusted ? " · ajustado" : ""}</TableCell>
               <TableCell className="text-sm">{fmtBrl(c.budgetedCost)}</TableCell>
-              <TableCell className="text-sm">{fmtBrl(c.actualCost)}</TableCell>
+              <TableCell className="text-sm">{fmtBrl(c.actualCost)}{c.costAdjusted ? " · ajustado" : ""}</TableCell>
               <TableCell className="text-sm">{fmtBrl(c.budgetedProfit)}</TableCell>
               <TableCell className="text-sm">{fmtBrl(c.actualProfit)}</TableCell>
               <TableCell className="text-sm">{fmtBrl(c.received)}</TableCell>
@@ -892,8 +952,8 @@ function TeamUtilizationTab() {
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead>User</TableHead><TableHead>Project</TableHead>
-          <TableHead>Available h</TableHead><TableHead>Worked h</TableHead><TableHead>Rate</TableHead>
+          <TableHead>Pessoa</TableHead><TableHead>Projeto</TableHead>
+          <TableHead>Horas disponíveis</TableHead><TableHead>Horas lançadas</TableHead><TableHead>Valor/hora</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -906,7 +966,7 @@ function TeamUtilizationTab() {
             <TableCell className="text-sm">{row.hourlyRate ? fmtBrl(row.hourlyRate) : "—"}</TableCell>
           </TableRow>
         ))}
-        {!data?.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">No allocations configured</TableCell></TableRow>}
+        {!data?.length && <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground py-8">Nenhuma hora lançada nos seus projetos</TableCell></TableRow>}
       </TableBody>
     </Table>
   );
@@ -916,7 +976,7 @@ function TeamUtilizationTab() {
 export default function Finance() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const [mainTab, setMainTab] = useState(isAdmin ? "operational" : "utilization");
+  const [mainTab, setMainTab] = useState("operational");
   const [showAddEntry, setShowAddEntry] = useState(false);
   const [showAddCategory, setShowAddCategory] = useState(false);
   const [activeTab, setActiveTab] = useState("revenue");
@@ -962,22 +1022,16 @@ export default function Finance() {
 
       <Tabs value={mainTab} onValueChange={setMainTab}>
         <TabsList>
-          {isAdmin && <TabsTrigger value="operational">Resumo</TabsTrigger>}
-          {isAdmin && <TabsTrigger value="projects">Por projeto</TabsTrigger>}
-          {isAdmin && <TabsTrigger value="contracts">Contratos P&L</TabsTrigger>}
+          <TabsTrigger value="operational">Resumo</TabsTrigger>
+          <TabsTrigger value="projects">Por projeto</TabsTrigger>
+          <TabsTrigger value="contracts">Contratos P&L</TabsTrigger>
           <TabsTrigger value="utilization">Utilização equipe</TabsTrigger>
           {isAdmin && <TabsTrigger value="kpi">Histórico KPI</TabsTrigger>}
         </TabsList>
 
-        {isAdmin && (
-          <TabsContent value="operational" className="mt-4"><OperationalSummaryTab /></TabsContent>
-        )}
-        {isAdmin && (
-          <TabsContent value="projects" className="mt-4"><ProjectsFinanceTab /></TabsContent>
-        )}
-        {isAdmin && (
-          <TabsContent value="contracts" className="mt-4"><ContractPlTab /></TabsContent>
-        )}
+        <TabsContent value="operational" className="mt-4"><OperationalSummaryTab /></TabsContent>
+        <TabsContent value="projects" className="mt-4"><ProjectsFinanceTab /></TabsContent>
+        <TabsContent value="contracts" className="mt-4"><ContractPlTab /></TabsContent>
         <TabsContent value="utilization" className="mt-4"><TeamUtilizationTab /></TabsContent>
         {isAdmin && (
           <TabsContent value="kpi" className="mt-4">
