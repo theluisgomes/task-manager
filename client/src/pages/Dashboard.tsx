@@ -7,14 +7,14 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  DollarSign,
   FolderKanban,
-  Layers,
-  LayoutDashboard,
   LogIn,
-  Timer,
+  Minus,
   TrendingUp,
   Users,
 } from "lucide-react";
+import { useState } from "react";
 import { useLocation } from "wouter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +24,7 @@ import { format, isToday, isTomorrow, differenceInDays, parseISO } from "date-fn
 import { ptBR } from "date-fns/locale";
 import { fmtBrl } from "@shared/billing";
 import { BRAND, foregroundOn } from "@/lib/brand";
+import { toast } from "sonner";
 
 function StatCard({
   icon: Icon,
@@ -56,19 +57,26 @@ function StatCard({
   );
 }
 
+const PRIORITY_LABEL: Record<string, string> = {
+  low: "baixa",
+  medium: "média",
+  high: "alta",
+  urgent: "urgente",
+};
+
 function PriorityBadge({ priority }: { priority: string }) {
-  return <span className={`priority-${priority}`}>{priority}</span>;
+  return <span className={`priority-${priority}`}>{PRIORITY_LABEL[priority] ?? priority}</span>;
 }
 
 function DueDateLabel({ dueDate }: { dueDate: Date | null }) {
   if (!dueDate) return null;
   const d = new Date(dueDate);
   const diff = differenceInDays(d, new Date());
-  let label = format(d, "MMM d");
+  let label = format(d, "d MMM", { locale: ptBR });
   let cls = "text-muted-foreground";
-  if (isToday(d)) { label = "Today"; cls = "text-data-3-ink font-medium"; }
-  else if (isTomorrow(d)) { label = "Tomorrow"; cls = "text-data-3-ink"; }
-  else if (diff < 0) { label = `${Math.abs(diff)}d overdue`; cls = "text-destructive font-medium"; }
+  if (isToday(d)) { label = "Hoje"; cls = "text-data-3-ink font-medium"; }
+  else if (isTomorrow(d)) { label = "Amanhã"; cls = "text-data-3-ink"; }
+  else if (diff < 0) { label = `${Math.abs(diff)}d atrasado`; cls = "text-destructive font-medium"; }
   else if (diff <= 3) cls = "text-data-3-ink";
   return (
     <span className={`flex items-center gap-1 text-xs ${cls}`}>
@@ -78,10 +86,52 @@ function DueDateLabel({ dueDate }: { dueDate: Date | null }) {
   );
 }
 
+function formatHours(value: number) {
+  return `${value.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}h`;
+}
+
+function DeadlineItem({
+  task,
+  done,
+  overdue,
+  pending,
+  onToggle,
+}: {
+  task: { id: number; title: string; dueDate: Date | null; priority: string };
+  done: boolean;
+  overdue: boolean;
+  pending: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Card className={`border-0 py-0 gap-0 shadow-none ${overdue && !done ? "border-l-2 border-l-destructive" : ""}`}>
+      <CardContent className="px-2 py-1">
+        <div className="flex items-center gap-2 min-h-7">
+          <button
+            type="button"
+            aria-pressed={done}
+            aria-label={done ? "Desmarcar como realizado" : "Marcar como realizado"}
+            disabled={pending}
+            className="shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            onClick={onToggle}
+          >
+            {done
+              ? <CheckCircle2 className="h-3.5 w-3.5 text-data-1-ink" />
+              : <Circle className={`h-3.5 w-3.5 ${overdue ? "text-destructive" : "text-muted-foreground"}`} />}
+          </button>
+          <p className={`text-xs font-medium truncate flex-1 ${done ? "line-through text-muted-foreground" : ""}`}>{task.title}</p>
+          <DueDateLabel dueDate={task.dueDate} />
+          <PriorityBadge priority={task.priority} />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
-  const { data: stats, isLoading: statsLoading } = trpc.dashboard.stats.useQuery();
+  const { data: finance, isLoading: financeLoading } = trpc.finance.summary.useQuery();
   const { data: projects, isLoading: projectsLoading } = trpc.dashboard.recentProjects.useQuery();
   const { data: upcoming, isLoading: upcomingLoading } = trpc.dashboard.upcomingTasks.useQuery({ days: 14, limit: 50 });
   const { data: alerts } = trpc.dashboard.alerts.useQuery(undefined, { enabled: user?.role === "admin" });
@@ -94,20 +144,28 @@ export default function Dashboard() {
     { enabled: user?.role === "admin" }
   );
 
-  const now = new Date();
-  const overdueTasks = (upcoming ?? []).filter((t) => t.dueDate && new Date(t.dueDate) < now);
-  const upcomingOnly = (upcoming ?? []).filter((t) => !t.dueDate || new Date(t.dueDate) >= now);
+  const [listsExpanded, setListsExpanded] = useState(false);
+  const utils = trpc.useUtils();
+  const setTaskDone = trpc.tasks.update.useMutation({
+    onSuccess: () => { utils.dashboard.upcomingTasks.invalidate(); },
+    onError: (err) => toast.error(err.message || "Não foi possível atualizar a tarefa"),
+  });
 
-  const taskCounts = stats?.taskCounts as Record<string, number> | undefined;
-  const totalTasks = Object.values(taskCounts ?? {}).reduce((a, b) => a + b, 0);
-  const doneTasks = taskCounts?.done ?? 0;
-  const inProgressTasks = taskCounts?.in_progress ?? 0;
+  const now = new Date();
+  const openTasks = (upcoming ?? []).filter((t) => t.status !== "done");
+  const doneTasks = (upcoming ?? []).filter((t) => t.status === "done");
+  const overdueTasks = openTasks.filter((t) => t.dueDate && new Date(t.dueDate) < now);
+  const upcomingOnly = openTasks.filter((t) => !t.dueDate || new Date(t.dueDate) >= now);
+
+  const financeProjects = finance?.projects ?? [];
+  const hoursLogged = financeProjects.reduce((sum, project) => sum + (project.totalHours ?? 0), 0);
+  const totals = finance?.totals;
 
   const greeting = () => {
     const h = new Date().getHours();
-    if (h < 12) return "Good morning";
-    if (h < 17) return "Good afternoon";
-    return "Good evening";
+    if (h < 12) return "Bom dia";
+    if (h < 17) return "Boa tarde";
+    return "Boa noite";
   };
 
   return (
@@ -115,10 +173,10 @@ export default function Dashboard() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">
-            {greeting()}, {user?.name?.split(" ")[0] ?? "there"} 👋
+            {greeting()}, {user?.name?.split(" ")[0] ?? "olá"}
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Here's what's happening across your projects today.
+            Receita, custo, lucro e horas dos seus projetos.
           </p>
         </div>
         <Button
@@ -128,12 +186,12 @@ export default function Dashboard() {
           className="gap-1.5"
         >
           <FolderKanban className="h-3.5 w-3.5" />
-          View Projects
+          Ver projetos
         </Button>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {statsLoading ? (
+        {financeLoading ? (
           Array.from({ length: 4 }).map((_, i) => (
             <Card key={i} className="border-0 shadow-sm">
               <CardContent className="p-5">
@@ -142,35 +200,41 @@ export default function Dashboard() {
               </CardContent>
             </Card>
           ))
+        ) : !financeProjects.length || !totals ? (
+          <Card className="border-0 shadow-sm col-span-2 lg:col-span-4">
+            <CardContent className="p-6 text-sm text-muted-foreground">
+              Nenhum projeto sob a sua gestão. O resumo mostra contratos e horas dos projetos em que você é owner ou admin.
+            </CardContent>
+          </Card>
         ) : (
           <>
             <StatCard
-              icon={FolderKanban}
-              label="Total Projects"
-              value={stats?.totalProjects ?? 0}
-              sub="Active workspaces"
-              color="bg-primary/10 text-primary"
-            />
-            <StatCard
-              icon={Layers}
-              label="Total Tasks"
-              value={totalTasks}
-              sub={`${doneTasks} completed`}
+              icon={DollarSign}
+              label="Receita real"
+              value={fmtBrl(totals.actualRevenue)}
+              sub="Parcelas recebidas"
               color="bg-data-6/15 text-data-6-ink"
             />
             <StatCard
-              icon={Timer}
-              label="In Progress"
-              value={inProgressTasks}
-              sub="Active tasks"
-              color="bg-data-3/15 text-data-3-ink"
+              icon={Minus}
+              label="Custo real"
+              value={fmtBrl(totals.actualCost)}
+              sub="Horas e ajustes do contrato"
+              color="bg-data-4/15 text-data-4-ink"
             />
             <StatCard
-              icon={CheckCircle2}
-              label="Completed"
-              value={doneTasks}
-              sub={totalTasks > 0 ? `${Math.round((doneTasks / totalTasks) * 100)}% done` : "0% done"}
+              icon={TrendingUp}
+              label="Lucro real"
+              value={fmtBrl(totals.actualProfit)}
+              sub="Receita menos custo"
               color="bg-data-1/15 text-data-1-ink"
+            />
+            <StatCard
+              icon={Clock}
+              label="Horas lançadas"
+              value={formatHours(hoursLogged)}
+              sub="Nos projetos do resumo"
+              color="bg-primary/10 text-primary"
             />
           </>
         )}
@@ -183,7 +247,7 @@ export default function Dashboard() {
               Projetos estratégicos
             </h2>
             <Button variant="ghost" size="sm" className="text-xs gap-1" onClick={() => setLocation("/projects")}>
-              Abrir Projects <ArrowRight className="h-3 w-3" />
+              Abrir projetos <ArrowRight className="h-3 w-3" />
             </Button>
           </div>
           <div className="flex gap-3 overflow-x-auto pb-1">
@@ -203,7 +267,7 @@ export default function Dashboard() {
                     )}
                   </div>
                   <p className="text-xs text-muted-foreground truncate">
-                    Deadline: {row.nearestDeadline
+                    Prazo: {row.nearestDeadline
                       ? `${row.nearestDeadline.title} · ${format(new Date(row.nearestDeadline.dueDate!), "dd/MM")}`
                       : "—"}
                   </p>
@@ -233,14 +297,14 @@ export default function Dashboard() {
       {user?.role === "admin" && alerts && alerts.length > 0 && (
         <Card className="border-data-3/40 bg-data-3/10">
           <CardContent className="p-4">
-            <p className="text-sm font-medium text-data-3-ink mb-2">{alerts.length} alert{alerts.length !== 1 ? "s" : ""} require attention</p>
+            <p className="text-sm font-medium text-data-3-ink mb-2">{alerts.length} {alerts.length === 1 ? "alerta pede atenção" : "alertas pedem atenção"}</p>
             <div className="flex flex-wrap gap-2">
               {alerts.slice(0, 5).map((a, i) => (
                 <Badge key={i} variant="outline" className="text-xs border-data-3/60 text-data-3-ink">
                   {a.type.replace(/_/g, " ")}
                 </Badge>
               ))}
-              <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => setLocation("/calendar")}>View calendar</Button>
+              <Button variant="link" size="sm" className="h-auto p-0 text-xs" onClick={() => setLocation("/calendar")}>Ver calendário</Button>
             </div>
           </CardContent>
         </Card>
@@ -372,112 +436,30 @@ export default function Dashboard() {
         </section>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         <div className="lg:col-span-2 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Recent Projects
+              Prazos
             </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs gap-1 text-muted-foreground hover:text-foreground"
-              onClick={() => setLocation("/projects")}
-            >
-              Todos os projetos <ArrowRight className="h-3 w-3" />
-            </Button>
-          </div>
-
-          {projectsLoading ? (
-            <div className="space-y-3">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <Card key={i} className="border-0 shadow-sm">
-                  <CardContent className="p-4">
-                    <Skeleton className="h-4 w-40 mb-2" />
-                    <Skeleton className="h-3 w-64" />
-                  </CardContent>
-                </Card>
-              ))}
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs h-7 px-2"
+                onClick={() => setListsExpanded((open) => !open)}
+              >
+                {listsExpanded ? "Recolher" : "Expandir"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-xs gap-1 text-muted-foreground hover:text-foreground h-7 px-2"
+                onClick={() => setLocation("/calendar")}
+              >
+                Ver todos <ArrowRight className="h-3 w-3" />
+              </Button>
             </div>
-          ) : !projects?.length ? (
-            <Card className="border-0 shadow-sm border-dashed border-2 border-border">
-              <CardContent className="p-8 flex flex-col items-center text-center gap-3">
-                <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center">
-                  <FolderKanban className="h-5 w-5 text-muted-foreground" />
-                </div>
-                <div>
-                  <p className="font-medium text-sm">No projects yet</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Create your first project to get started
-                  </p>
-                </div>
-                <Button size="sm" onClick={() => setLocation("/projects?create=1")}>
-                  Create Project
-                </Button>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-3">
-              {projects.slice(0, 5).map((project) => (
-                <Card
-                  key={project.id}
-                  className="border-0 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer group"
-                  onClick={() => setLocation(`/projects/${project.id}`)}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex items-center gap-3">
-                      <div
-                        className="h-9 w-9 rounded-xl flex items-center justify-center shrink-0 text-sm font-semibold"
-                        style={{ background: project.color ?? BRAND.signal, color: foregroundOn(project.color ?? BRAND.signal) }}
-                      >
-                        {project.name.charAt(0).toUpperCase()}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <p className="font-medium text-sm truncate group-hover:text-primary transition-colors">
-                            {project.name}
-                          </p>
-                          <Badge
-                            variant="secondary"
-                            className={`text-[10px] h-4 px-1.5 shrink-0 ${
-                              project.status === "active"
-                                ? "bg-data-1/15 text-data-1-ink border-transparent"
-                                : project.status === "completed"
-                                ? "bg-data-6/15 text-data-6-ink border-transparent"
-                                : "bg-muted text-muted-foreground border-transparent"
-                            }`}
-                          >
-                            {project.status}
-                          </Badge>
-                        </div>
-                        {project.description && (
-                          <p className="text-xs text-muted-foreground truncate mt-0.5">
-                            {project.description}
-                          </p>
-                        )}
-                      </div>
-                      <ArrowRight className="h-3.5 w-3.5 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Deadlines
-            </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs gap-1 text-muted-foreground hover:text-foreground h-7 px-2"
-              onClick={() => setLocation("/calendar")}
-            >
-              View all <ArrowRight className="h-3 w-3" />
-            </Button>
           </div>
 
           {upcomingLoading ? (
@@ -491,120 +473,123 @@ export default function Dashboard() {
                 </Card>
               ))}
             </div>
-          ) : !overdueTasks.length && !upcomingOnly.length ? (
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-6 flex flex-col items-center text-center gap-2">
-                <CheckCircle2 className="h-8 w-8 text-data-1-ink" />
-                <p className="text-sm font-medium">All clear!</p>
-                <p className="text-xs text-muted-foreground">No overdue or upcoming deadlines.</p>
-              </CardContent>
-            </Card>
           ) : (
-            <div className="space-y-3">
+            <div className={`space-y-1 pr-1 ${listsExpanded ? "" : "h-80 overflow-y-auto"}`}>
+              {!overdueTasks.length && !upcomingOnly.length && (
+                <Card className="border-0 shadow-sm">
+                  <CardContent className="p-6 flex flex-col items-center text-center gap-2">
+                    <CheckCircle2 className="h-8 w-8 text-data-1-ink" />
+                    <p className="text-sm font-medium">Em dia</p>
+                    <p className="text-xs text-muted-foreground">Nenhum prazo atrasado ou próximo.</p>
+                  </CardContent>
+                </Card>
+              )}
               {overdueTasks.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-destructive">
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-destructive sticky top-0 bg-background py-0.5">
                     Atrasados ({overdueTasks.length})
                   </p>
-                  {overdueTasks.slice(0, 8).map((task) => (
-                    <Card
+                  {overdueTasks.map((task) => (
+                    <DeadlineItem
                       key={task.id}
-                      className="border-0 shadow-sm hover:shadow-md transition-all duration-200 border-l-2 border-l-destructive"
-                    >
-                      <CardContent className="p-3">
-                        <div className="flex items-start gap-2">
-                          <Circle className="h-3.5 w-3.5 mt-0.5 text-destructive shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium truncate">{task.title}</p>
-                            <div className="flex items-center gap-2 mt-1.5">
-                              <DueDateLabel dueDate={task.dueDate} />
-                              <PriorityBadge priority={task.priority} />
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
+                      task={task}
+                      done={false}
+                      overdue
+                      pending={setTaskDone.isPending && setTaskDone.variables?.id === task.id}
+                      onToggle={() => setTaskDone.mutate({ id: task.id, status: "done" })}
+                    />
                   ))}
                 </div>
               )}
               {upcomingOnly.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sticky top-0 bg-background py-0.5">
                     Próximos ({upcomingOnly.length})
                   </p>
-                  {upcomingOnly.slice(0, 8).map((task) => (
-                    <Card
+                  {upcomingOnly.map((task) => (
+                    <DeadlineItem
                       key={task.id}
-                      className="border-0 shadow-sm hover:shadow-md transition-all duration-200"
-                    >
-                      <CardContent className="p-3">
-                        <div className="flex items-start gap-2">
-                          <Circle className="h-3.5 w-3.5 mt-0.5 text-muted-foreground shrink-0" />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-xs font-medium truncate">{task.title}</p>
-                            <div className="flex items-center gap-2 mt-1.5">
-                              <DueDateLabel dueDate={task.dueDate} />
-                              <PriorityBadge priority={task.priority} />
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
+                      task={task}
+                      done={false}
+                      overdue={false}
+                      pending={setTaskDone.isPending && setTaskDone.variables?.id === task.id}
+                      onToggle={() => setTaskDone.mutate({ id: task.id, status: "done" })}
+                    />
+                  ))}
+                </div>
+              )}
+              {doneTasks.length > 0 && (
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground sticky top-0 bg-background py-0.5">
+                    Realizados ({doneTasks.length})
+                  </p>
+                  {doneTasks.map((task) => (
+                    <DeadlineItem
+                      key={task.id}
+                      task={task}
+                      done
+                      overdue={false}
+                      pending={setTaskDone.isPending && setTaskDone.variables?.id === task.id}
+                      onToggle={() => setTaskDone.mutate({ id: task.id, status: "todo" })}
+                    />
                   ))}
                 </div>
               )}
             </div>
           )}
         </div>
+
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
+              Últimos projetos
+            </h2>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs gap-1 text-muted-foreground hover:text-foreground h-7 px-2"
+              onClick={() => setLocation("/projects")}
+            >
+              Ver <ArrowRight className="h-3 w-3" />
+            </Button>
+          </div>
+          {projectsLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-9 w-full" />
+              ))}
+            </div>
+          ) : !projects?.length ? (
+            <button
+              type="button"
+              className="w-full rounded-lg border border-dashed border-border px-3 py-4 text-left text-xs text-muted-foreground hover:bg-muted/40"
+              onClick={() => setLocation("/projects?create=1")}
+            >
+              Nenhum projeto ainda. Criar o primeiro.
+            </button>
+          ) : (
+            <div className={`space-y-0.5 pr-1 ${listsExpanded ? "" : "h-80 overflow-y-auto"}`}>
+              {projects.map((project) => (
+                <button
+                  key={project.id}
+                  type="button"
+                  className="w-full flex items-center gap-2 rounded-md px-1.5 py-0.5 text-left hover:bg-muted/60"
+                  onClick={() => setLocation(`/projects/${project.id}`)}
+                >
+                  <span
+                    className="h-5 w-5 rounded flex items-center justify-center shrink-0 text-[10px] font-semibold"
+                    style={{ background: project.color ?? BRAND.signal, color: foregroundOn(project.color ?? BRAND.signal) }}
+                  >
+                    {project.name.charAt(0).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1 text-xs font-medium truncate">{project.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card
-          className="border-0 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer group"
-          onClick={() => setLocation("/projects")}
-        >
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center">
-              <LayoutDashboard className="h-5 w-5 text-primary" />
-            </div>
-            <div>
-              <p className="font-medium text-sm group-hover:text-primary transition-colors">Manage Boards</p>
-              <p className="text-xs text-muted-foreground">View all project boards</p>
-            </div>
-            <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-          </CardContent>
-        </Card>
-        <Card
-          className="border-0 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer group"
-          onClick={() => setLocation("/team")}
-        >
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-10 w-10 rounded-xl bg-data-6/15 flex items-center justify-center">
-              <FolderKanban className="h-5 w-5 text-data-6-ink" />
-            </div>
-            <div>
-              <p className="font-medium text-sm group-hover:text-primary transition-colors">Team Workload</p>
-              <p className="text-xs text-muted-foreground">View member assignments</p>
-            </div>
-            <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-          </CardContent>
-        </Card>
-        <Card
-          className="border-0 shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer group"
-          onClick={() => setLocation("/finance")}
-        >
-          <CardContent className="p-5 flex items-center gap-4">
-            <div className="h-10 w-10 rounded-xl bg-data-3/15 flex items-center justify-center">
-              <TrendingUp className="h-5 w-5 text-data-3-ink" />
-            </div>
-            <div>
-              <p className="font-medium text-sm group-hover:text-primary transition-colors">Finance KPI</p>
-              <p className="text-xs text-muted-foreground">Revenue & projections</p>
-            </div>
-            <ArrowRight className="h-4 w-4 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-          </CardContent>
-        </Card>
-      </div>
     </div>
   );
 }

@@ -987,7 +987,8 @@ export async function getUpcomingTasks(
   if (!boardIds.length) return [];
   const now = new Date();
   const future = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-  // Include overdue + upcoming; exclude done. dueDate null never matches lte.
+  const recent = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  // Overdue and upcoming stay visible. Done tasks stay only while their due date is still in this window, so they can be reopened.
   const result = await db
     .select()
     .from(tasks)
@@ -995,7 +996,7 @@ export async function getUpcomingTasks(
       and(
         inArray(tasks.boardId, boardIds),
         lte(tasks.dueDate, future),
-        ne(tasks.status, "done")
+        or(ne(tasks.status, "done"), gte(tasks.dueDate, recent))
       )
     )
     .orderBy(tasks.dueDate)

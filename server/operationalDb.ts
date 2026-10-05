@@ -395,7 +395,7 @@ export async function getAllocationsByProject(projectId: number) {
 
 // ─── Leads & Contracts ────────────────────────────────────────────────────────
 
-export async function createLead(data: { clientName: string; title: string; projectId?: number; estimatedValue?: number; createdById: number }) {
+export async function createLead(data: { clientName: string; title: string; projectId?: number; estimatedValue?: number; notes?: string | null; createdById: number }) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   const result = await db.insert(leads).values({
@@ -403,6 +403,7 @@ export async function createLead(data: { clientName: string; title: string; proj
     title: data.title,
     projectId: data.projectId ?? null,
     estimatedValue: data.estimatedValue?.toString() ?? null,
+    notes: data.notes ?? null,
     createdById: data.createdById,
   });
   const leadId = result[0].insertId;
@@ -417,7 +418,7 @@ export async function getLeadByProject(projectId: number) {
   return row;
 }
 
-export async function updateLead(id: number, data: Partial<{ isHot: boolean; dueDiligenceNotes: string; dueDiligenceCompletedAt: Date | null; status: "prospecting" | "proposal" | "negotiation" | "won" | "lost"; estimatedValue: number }>) {
+export async function updateLead(id: number, data: Partial<{ isHot: boolean; dueDiligenceNotes: string; dueDiligenceCompletedAt: Date | null; status: "prospecting" | "proposal" | "negotiation" | "won" | "lost"; estimatedValue: number | null; clientName: string; title: string; notes: string | null; projectId: number | null }>) {
   const db = await getDb();
   if (!db) throw new Error("DB unavailable");
   const update: Record<string, unknown> = {};
@@ -425,8 +426,16 @@ export async function updateLead(id: number, data: Partial<{ isHot: boolean; due
   if (data.dueDiligenceNotes !== undefined) update.dueDiligenceNotes = data.dueDiligenceNotes;
   if (data.dueDiligenceCompletedAt !== undefined) update.dueDiligenceCompletedAt = data.dueDiligenceCompletedAt;
   if (data.status !== undefined) update.status = data.status;
-  if (data.estimatedValue !== undefined) update.estimatedValue = data.estimatedValue.toString();
+  if (data.estimatedValue !== undefined) update.estimatedValue = data.estimatedValue == null ? null : data.estimatedValue.toString();
+  if (data.clientName !== undefined) update.clientName = data.clientName;
+  if (data.title !== undefined) update.title = data.title;
+  if (data.notes !== undefined) update.notes = data.notes;
+  if (data.projectId !== undefined) update.projectId = data.projectId;
   await db.update(leads).set(update).where(eq(leads.id, id));
+  if (data.projectId !== undefined) {
+    await db.update(projects).set({ leadId: null }).where(eq(projects.leadId, id));
+    if (data.projectId) await db.update(projects).set({ leadId: id }).where(eq(projects.id, data.projectId));
+  }
 }
 
 export async function createContract(data: { projectId: number; clientName: string; title: string; totalValue: number; budgetedCost?: number; leadId?: number; createdById: number }) {

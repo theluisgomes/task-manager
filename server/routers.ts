@@ -1062,12 +1062,15 @@ const crmRouter = router({
   updateLead: protectedProcedure
     .input(z.object({
       id: z.number(),
-      projectId: z.number().optional(),
+      projectId: z.number().nullable().optional(),
       isHot: z.boolean().optional(),
       dueDiligenceNotes: z.string().optional(),
       completeDueDiligence: z.boolean().optional(),
       status: z.enum(["prospecting", "proposal", "negotiation", "won", "lost"]).optional(),
-      estimatedValue: z.number().optional(),
+      estimatedValue: z.number().nullable().optional(),
+      clientName: z.string().min(1).optional(),
+      title: z.string().min(1).optional(),
+      notes: z.string().nullable().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
       if (input.projectId) {
@@ -1080,12 +1083,12 @@ const crmRouter = router({
           forbidden("Not allowed to update this lead");
         }
       }
-      const { id, projectId: _, completeDueDiligence, ...data } = input;
+      const { id, completeDueDiligence, ...data } = input;
       await updateLead(id, {
         ...data,
         dueDiligenceCompletedAt: completeDueDiligence ? new Date() : undefined,
       });
-      if (data.estimatedValue !== undefined) await onLeadValueChanged(id, data.estimatedValue);
+      if (typeof data.estimatedValue === "number") await onLeadValueChanged(id, data.estimatedValue);
       const integration = data.status ? await onLeadStatusChanged(id, data.status, ctx.user.id) : null;
       return { integration };
     }),
@@ -1233,6 +1236,7 @@ const crmRouter = router({
       clientName: z.string().min(1),
       title: z.string().min(1),
       estimatedValue: z.number().optional(),
+      notes: z.string().optional(),
       projectId: z.number().optional(),
       isHot: z.boolean().optional(),
       status: z.enum(["prospecting", "proposal", "negotiation", "won", "lost"]).optional(),
@@ -1245,6 +1249,7 @@ const crmRouter = router({
         clientName: input.clientName,
         title: input.title,
         estimatedValue: input.estimatedValue,
+        notes: input.notes,
         projectId: input.projectId,
         createdById: ctx.user.id,
       });
