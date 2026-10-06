@@ -165,6 +165,32 @@ describe("auth", () => {
     const caller = appRouter.createCaller(ctx);
     const result = await caller.auth.me();
     expect(result?.email).toBe("test@example.com");
+    expect(result?.canSeeMoney).toBe(true);
+  });
+
+  it("me denies money to regular members", async () => {
+    const { ctx } = makeCtx({ role: "user", email: "member@x.com" });
+    const result = await appRouter.createCaller(ctx).auth.me();
+    expect(result?.canSeeMoney).toBe(false);
+  });
+
+  it("me allows money for an allowlisted viewer", async () => {
+    const previous = ENV.financeViewerEmails;
+    ENV.financeViewerEmails = "guto@wise.in";
+    try {
+      const { ctx } = makeCtx({ role: "user", email: "guto@wise.in" });
+      const result = await appRouter.createCaller(ctx).auth.me();
+      expect(result?.canSeeMoney).toBe(true);
+    } finally {
+      ENV.financeViewerEmails = previous;
+    }
+  });
+
+  it("blocks finance.summary for members who cannot see money", async () => {
+    const { ctx } = makeCtx({ role: "user", email: "member@x.com" });
+    await expect(appRouter.createCaller(ctx).finance.summary()).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
   });
 
   it("logout clears the session cookie", async () => {

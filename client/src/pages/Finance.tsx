@@ -379,6 +379,18 @@ export default function Finance() {
   const isAdmin = user?.role === "admin";
   const [mainTab, setMainTab] = useState("operational");
 
+  if (!user?.canSeeMoney) {
+    return (
+      <div className="p-6 max-w-7xl mx-auto">
+        <Card className="border shadow-sm">
+          <CardContent className="py-12 text-center text-sm text-muted-foreground">
+            Sem acesso a valores financeiros.
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between">

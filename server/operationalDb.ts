@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import { appliedAmount, computeDueDateFromInput, formatLocalDate, parseLocalDate } from "../shared/billing";
+import { buildWeekTimesheet, monthBoundsFromDate } from "../shared/hoursCapacity";
 import { hasMinRole } from "../shared/roles";
 import {
   nextProposalNumber,
@@ -249,8 +250,19 @@ export async function getProjectHoursSummary(projectIds: number[]) {
 }
 
 export async function getMyWeekTimesheet(userId: number, weekStart: string, weekEnd: string) {
+  const empty = buildWeekTimesheet({
+    projects: [],
+    cells: {},
+    allocations: [],
+    monthHoursByProject: {},
+    monthHoursTotal: 0,
+    weekHoursTotal: 0,
+    monthlyCapacity: null,
+    weekStart,
+    weekEnd,
+  });
   const db = await getDb();
-  if (!db) return { projects: [], cells: {} as Record<string, number> };
+  if (!db) return empty;
   const user = await getUserById(userId);
   const memberships = user?.role === "admin"
     ? await db
@@ -264,23 +276,79 @@ export async function getMyWeekTimesheet(userId: number, weekStart: string, week
         .innerJoin(projects, eq(projectMembers.projectId, projects.id))
         .where(and(eq(projectMembers.userId, userId), eq(projects.status, "active")))
         .orderBy(projects.name);
-  const rows = memberships.length
-    ? await db
-        .select()
-        .from(timesheets)
-        .where(and(
-          eq(timesheets.userId, userId),
-          inArray(timesheets.projectId, memberships.map((m) => m.id)),
-          gte(timesheets.date, workDate(weekStart)),
-          lte(timesheets.date, workDate(weekEnd)),
-        ))
-    : [];
+  const projectIds = memberships.map((m) => m.id);
+  const { start: monthStartDate, end: monthEndDate } = monthBoundsFromDate(weekStart);
+  const [weekRows, monthRows, allocationRows, employmentRows] = await Promise.all([
+    projectIds.length
+      ? db
+          .select()
+          .from(timesheets)
+          .where(and(
+            eq(timesheets.userId, userId),
+            inArray(timesheets.projectId, projectIds),
+            gte(timesheets.date, workDate(weekStart)),
+            lte(timesheets.date, workDate(weekEnd)),
+          ))
+      : Promise.resolve([]),
+    projectIds.length
+      ? db
+          .select()
+          .from(timesheets)
+          .where(and(
+            eq(timesheets.userId, userId),
+            inArray(timesheets.projectId, projectIds),
+            gte(timesheets.date, workDate(monthStartDate)),
+            lte(timesheets.date, workDate(monthEndDate)),
+          ))
+      : Promise.resolve([]),
+    db
+      .select({
+        projectId: userContractAllocations.projectId,
+        availableHours: userContractAllocations.availableHours,
+        periodStart: userContractAllocations.periodStart,
+        periodEnd: userContractAllocations.periodEnd,
+      })
+      .from(userContractAllocations)
+      .where(eq(userContractAllocations.userId, userId)),
+    db
+      .select({ availableHoursPerMonth: userEmploymentContracts.availableHoursPerMonth })
+      .from(userEmploymentContracts)
+      .where(eq(userEmploymentContracts.userId, userId))
+      .orderBy(desc(userEmploymentContracts.createdAt))
+      .limit(1),
+  ]);
   const cells: Record<string, number> = {};
-  for (const row of rows) {
+  for (const row of weekRows) {
     const key = `${row.projectId}:${formatWorkDate(row.date)}`;
     cells[key] = (cells[key] ?? 0) + parseDecimal(row.hours);
   }
-  return { projects: memberships, cells };
+  const monthHoursByProject: Record<number, number> = {};
+  let monthHoursTotal = 0;
+  for (const row of monthRows) {
+    const hours = parseDecimal(row.hours);
+    monthHoursByProject[row.projectId] = (monthHoursByProject[row.projectId] ?? 0) + hours;
+    monthHoursTotal += hours;
+  }
+  const weekHoursTotal = Object.values(cells).reduce((sum, hours) => sum + hours, 0);
+  const monthlyCapacity = employmentRows[0]
+    ? parseDecimal(employmentRows[0].availableHoursPerMonth)
+    : null;
+  return buildWeekTimesheet({
+    projects: memberships,
+    cells,
+    allocations: allocationRows.map((row) => ({
+      projectId: row.projectId,
+      availableHours: parseDecimal(row.availableHours),
+      periodStart: row.periodStart,
+      periodEnd: row.periodEnd,
+    })),
+    monthHoursByProject,
+    monthHoursTotal,
+    weekHoursTotal,
+    monthlyCapacity: monthlyCapacity && monthlyCapacity > 0 ? monthlyCapacity : null,
+    weekStart,
+    weekEnd,
+  });
 }
 
 export async function upsertMyTimesheet(

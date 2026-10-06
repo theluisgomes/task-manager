@@ -168,7 +168,8 @@ function DashboardLayoutContent({
   const [isResizing, setIsResizing] = useState(false);
   const isMobile = useIsMobile();
 
-  const activeMenuItem = menuItems.find((item) =>
+  const visibleMenuItems = menuItems.filter((item) => item.path !== "/finance" || user?.canSeeMoney);
+  const activeMenuItem = visibleMenuItems.find((item) =>
     item.path === "/" ? location === "/" : location.startsWith(item.path)
   );
 
@@ -216,7 +217,7 @@ function DashboardLayoutContent({
 
           <SidebarContent className="px-2 py-3">
             <SidebarMenu>
-              {menuItems.map((item) => (
+              {visibleMenuItems.map((item) => (
                 <SidebarMenuItem key={item.path}>
                   <SidebarMenuButton
                     isActive={activeMenuItem?.path === item.path}

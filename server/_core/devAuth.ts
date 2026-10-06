@@ -39,7 +39,13 @@ export function registerDevAuthRoutes(app: Express) {
       res.redirect(302, "/");
     } catch (error) {
       console.error("[DevAuth] Login failed", error);
-      res.status(500).send("Dev login failed — ensure DATABASE_URL and JWT_SECRET are set.");
+      const cause = error instanceof Error && "cause" in error ? (error as Error & { cause?: { code?: string } }).cause : undefined;
+      const unreachable = cause?.code === "ECONNREFUSED" || (error instanceof Error && /ECONNREFUSED/.test(error.message));
+      res.status(500).send(
+        unreachable
+          ? "Dev login failed — MySQL is not reachable on DATABASE_URL. Start it with `docker compose up -d db`."
+          : "Dev login failed — check DATABASE_URL, JWT_SECRET, and that MySQL is running."
+      );
     }
   });
 

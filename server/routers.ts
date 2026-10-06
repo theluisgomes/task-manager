@@ -4,13 +4,14 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
-import { forbidden, notFound, assertFinanceAdmin } from "./authz";
+import { forbidden, notFound, assertFinanceAdmin, assertCanSeeMoney, userCanSeeMoney } from "./authz";
 import { canDeleteProject, hasMinRole, isGlobalAdmin } from "@shared/roles";
 import {
   acceptInvite,
   addBoardMember,
   addProjectMember,
   assertBillableFinanceAccess,
+  assertBillableProjectManage,
   assertBoardAccess,
   assertProjectAccess,
   updateBoard,
@@ -295,7 +296,7 @@ const projectsRouter = router({
   acquisitionCost: protectedProcedure
     .input(z.object({ projectId: z.number() }))
     .query(async ({ input, ctx }) => {
-      assertFinanceAdmin(ctx.user.role);
+      assertCanSeeMoney(ctx.user);
       await requireProjectAccess(ctx.user.id, input.projectId);
       const project = await getProjectById(input.projectId);
       return getAcquisitionCost(input.projectId, project?.acquisitionOwnerId);
@@ -304,7 +305,7 @@ const projectsRouter = router({
   financeSummary: protectedProcedure
     .input(z.object({ projectId: z.number() }))
     .query(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       return getProjectFinanceSummary(input.projectId);
     }),
 
@@ -1055,7 +1056,7 @@ const crmRouter = router({
       estimatedValue: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableProjectManage(ctx.user.id, ctx.user.role, input.projectId);
       return createLead({ ...input, createdById: ctx.user.id });
     }),
 
@@ -1074,7 +1075,7 @@ const crmRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       if (input.projectId) {
-        await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+        await assertBillableProjectManage(ctx.user.id, ctx.user.role, input.projectId);
       } else if (ctx.user.role !== "admin") {
         // Standalone lead without project: only creator or admin
         const rows = await listAllLeads(ctx.user.id, false);
@@ -1096,7 +1097,7 @@ const crmRouter = router({
   getContract: protectedProcedure
     .input(z.object({ projectId: z.number() }))
     .query(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await requireProjectAccess(ctx.user.id, input.projectId);
       return getContractByProject(input.projectId);
     }),
 
@@ -1110,7 +1111,7 @@ const crmRouter = router({
       leadId: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       return createContract({ ...input, createdById: ctx.user.id });
     }),
 
@@ -1123,7 +1124,7 @@ const crmRouter = router({
       status: z.enum(["draft", "active", "completed", "cancelled"]).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       const { id, projectId, ...data } = input;
       await updateContract(id, data);
       const projectCompleted = await syncProjectCompletion(projectId);
@@ -1133,7 +1134,7 @@ const crmRouter = router({
   listPayments: protectedProcedure
     .input(z.object({ projectId: z.number() }))
     .query(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       const contract = await getContractByProject(input.projectId);
       if (!contract) return [];
       return getPaymentsByContract(contract.id);
@@ -1152,7 +1153,7 @@ const crmRouter = router({
       daysAfterBase: z.number().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       const contractId = input.contractId ?? await ensureProjectContract(input.projectId, ctx.user.id);
       const { projectId: _, contractId: __, ...data } = input;
       return createContractPayment({ ...data, contractId });
@@ -1174,7 +1175,7 @@ const crmRouter = router({
       paymentReceived: z.boolean().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       const { id, projectId, ...data } = input;
       await updateContractPayment(id, data);
       const projectCompleted = await syncProjectCompletion(projectId);
@@ -1243,7 +1244,7 @@ const crmRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       if (input.projectId) {
-        await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+        await assertBillableProjectManage(ctx.user.id, ctx.user.role, input.projectId);
       }
       const id = await createLead({
         clientName: input.clientName,
@@ -1353,7 +1354,7 @@ async function assertLinkAccess(
 ) {
   const isAdmin = user.role === "admin";
   if (links.projectId) {
-    await assertBillableFinanceAccess(user.id, user.role, links.projectId);
+    await requireProjectAccess(user.id, links.projectId, "member", isAdmin);
   }
   if (links.leadId && !isAdmin) {
     const leads = await listAllLeads(user.id, false);
@@ -1510,20 +1511,23 @@ const proposalsRouter = router({
 });
 
 const financeRouter = router({
-  summary: protectedProcedure.query(({ ctx }) =>
-    getFinanceSummaryForUser(ctx.user.id, ctx.user.role === "admin")
-  ),
+  summary: protectedProcedure.query(({ ctx }) => {
+    assertCanSeeMoney(ctx.user);
+    return getFinanceSummaryForUser(ctx.user.id, userCanSeeMoney(ctx.user));
+  }),
 
-  contractPl: protectedProcedure.query(({ ctx }) =>
-    getContractPlReport(ctx.user.id, ctx.user.role === "admin")
-  ),
+  contractPl: protectedProcedure.query(({ ctx }) => {
+    assertCanSeeMoney(ctx.user);
+    return getContractPlReport(ctx.user.id, userCanSeeMoney(ctx.user));
+  }),
 
-  teamUtilization: protectedProcedure.query(({ ctx }) =>
-    getTeamUtilization(ctx.user.id, ctx.user.role === "admin")
-  ),
+  teamUtilization: protectedProcedure.query(({ ctx }) => {
+    assertCanSeeMoney(ctx.user);
+    return getTeamUtilization(ctx.user.id, userCanSeeMoney(ctx.user));
+  }),
 
   hoursCostBreakdown: protectedProcedure.query(({ ctx }) => {
-    assertFinanceAdmin(ctx.user.role);
+    assertCanSeeMoney(ctx.user);
     return getHoursCostBreakdown(ctx.user.id, true);
   }),
 
@@ -1553,7 +1557,7 @@ const financeRouter = router({
       actualCost: z.number().nullable().optional(),
     }))
     .mutation(async ({ input, ctx }) => {
-      await assertBillableFinanceAccess(ctx.user.id, ctx.user.role, input.projectId);
+      await assertBillableFinanceAccess(ctx.user, input.projectId);
       const { projectId, ...data } = input;
       return updateProjectFinance(projectId, ctx.user.id, data);
     }),
@@ -1692,7 +1696,11 @@ export const appRouter = router({
       google: Boolean(ENV.googleClientId && ENV.googleClientSecret),
       microsoft: Boolean(ENV.microsoftClientId && ENV.microsoftClientSecret),
     })),
-    me: publicProcedure.query((opts) => opts.ctx.user),
+    me: publicProcedure.query((opts) => {
+      const user = opts.ctx.user;
+      if (!user) return null;
+      return { ...user, canSeeMoney: userCanSeeMoney(user) };
+    }),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });

@@ -393,6 +393,7 @@ function CalendarEventCard({
   onEdit: () => void;
   onPayment: (patch: { deliveryCompleted?: boolean; invoiceIssued?: boolean; paymentReceived?: boolean }) => void;
 }) {
+  const { user } = useAuth();
   const meta = calendarEventTypeMeta(ev.type);
   const link = calendarEventHref({
     type: ev.type,
@@ -433,14 +434,14 @@ function CalendarEventCard({
           )}
         </div>
       </div>
-      {ev.amount != null && <p className="text-sm font-semibold">{fmtBrl(ev.amount)}</p>}
+      {user?.canSeeMoney && ev.amount != null && <p className="text-sm font-semibold">{fmtBrl(ev.amount)}</p>}
       {link && (
         <Link href={link.href} className="inline-flex items-center gap-1 text-xs text-primary hover:underline">
           <ExternalLink className="h-3 w-3" />
           {link.label}
         </Link>
       )}
-      {ev.type === "payment" && ev.paymentId && ev.canManagePayment && (
+      {user?.canSeeMoney && ev.type === "payment" && ev.paymentId && ev.canManagePayment && (
         <div className="flex flex-wrap gap-4 text-xs">
           <label className="flex items-center gap-1.5">
             <Checkbox checked={!!ev.deliveryCompleted} onCheckedChange={(c) => onPayment({ deliveryCompleted: !!c })} />

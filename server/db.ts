@@ -26,7 +26,7 @@ import {
 import { isBillableProjectArea } from "../shared/projectAreas";
 import { canDeleteProject, hasMinRole } from "../shared/roles";
 import { ENV } from "./_core/env";
-import { forbidden, notFound } from "./authz";
+import { forbidden, notFound, userCanSeeMoney } from "./authz";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -82,7 +82,7 @@ export async function assertProjectAccess(
   return role;
 }
 
-export async function assertBillableFinanceAccess(
+export async function assertBillableProjectManage(
   userId: number,
   globalRole: string,
   projectId: number,
@@ -98,6 +98,20 @@ export async function assertBillableFinanceAccess(
     await assertProjectAccess(userId, projectId, minProjectRole);
   } catch {
     forbidden("Acesso ao faturamento restrito a administradores do projeto");
+  }
+}
+
+export async function assertBillableFinanceAccess(
+  user: { id: number; role: string; email?: string | null; openId?: string | null },
+  projectId: number
+): Promise<void> {
+  if (!userCanSeeMoney(user)) {
+    forbidden("Acesso ao faturamento restrito");
+  }
+  const project = await getProjectById(projectId);
+  if (!project) notFound("Project not found");
+  if (!isBillableProjectArea(project.area)) {
+    forbidden("Faturamento disponível apenas para projetos de Clientes e Prospectos");
   }
 }
 

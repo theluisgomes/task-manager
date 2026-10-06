@@ -19,6 +19,8 @@ export const ENV = {
   smtpUser: process.env.SMTP_USER ?? "",
   smtpPass: process.env.SMTP_PASS ?? "",
   paymentReminderEmail: process.env.PAYMENT_REMINDER_EMAIL ?? "rodrigo@wisemetrics.in",
+  financeViewerEmails: process.env.FINANCE_VIEWER_EMAILS ?? "",
+  financeViewerOpenIds: process.env.FINANCE_VIEWER_OPEN_IDS ?? "",
   cronSecret: process.env.CRON_SECRET ?? "",
   openRouterApiKey: process.env.OPENROUTER_API_KEY ?? "",
   openRouterModel: process.env.OPENROUTER_MODEL || "qwen/qwen3-30b-a3b-instruct-2507",

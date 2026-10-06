@@ -276,6 +276,7 @@ function AdminPeopleCostSection() {
   const createEmp = trpc.crm.createEmploymentContract.useMutation({
     onSuccess: () => {
       utils.crm.listEmploymentContracts.invalidate();
+      utils.timesheets.myWeek.invalidate();
       toast.success("Contrato profissional criado");
       setEmpUserId(""); setEmpTotal(""); setEmpInstallments("1"); setEmpHours("160");
     },
@@ -288,6 +289,7 @@ function AdminPeopleCostSection() {
     onSuccess: () => {
       utils.crm.listAllocations.invalidate();
       utils.finance.teamUtilization.invalidate();
+      utils.timesheets.myWeek.invalidate();
       toast.success("Alocação criada");
       setAllocUserId(""); setAllocProjectId(""); setAllocHours(""); setAllocRate("");
     },
@@ -297,6 +299,7 @@ function AdminPeopleCostSection() {
     onSuccess: () => {
       utils.crm.listAllocations.invalidate();
       utils.finance.teamUtilization.invalidate();
+      utils.timesheets.myWeek.invalidate();
     },
   });
 

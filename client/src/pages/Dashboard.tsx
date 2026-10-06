@@ -20,9 +20,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { format, isToday, isTomorrow, differenceInDays, parseISO } from "date-fns";
+import { addDays, eachDayOfInterval, format, isToday, isTomorrow, differenceInDays, parseISO, startOfWeek } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import { fmtBrl } from "@shared/billing";
+import { DEFAULT_DAILY_TARGET, formatHoursLabel } from "@shared/hoursCapacity";
 import { BRAND, foregroundOn } from "@/lib/brand";
 import { toast } from "sonner";
 
@@ -130,8 +131,18 @@ function DeadlineItem({
 
 export default function Dashboard() {
   const { user } = useAuth();
+  const canSeeMoney = Boolean(user?.canSeeMoney);
   const [, setLocation] = useLocation();
-  const { data: finance, isLoading: financeLoading } = trpc.finance.summary.useQuery();
+  const weekDays = eachDayOfInterval({
+    start: startOfWeek(new Date(), { weekStartsOn: 1 }),
+    end: addDays(startOfWeek(new Date(), { weekStartsOn: 1 }), 4),
+  });
+  const weekStart = format(weekDays[0], "yyyy-MM-dd");
+  const weekEnd = format(weekDays[4], "yyyy-MM-dd");
+  const { data: finance, isLoading: financeLoading } = trpc.finance.summary.useQuery(undefined, {
+    enabled: canSeeMoney,
+  });
+  const { data: weekSheet, isLoading: hoursLoading } = trpc.timesheets.myWeek.useQuery({ weekStart, weekEnd });
   const { data: projects, isLoading: projectsLoading } = trpc.dashboard.recentProjects.useQuery();
   const { data: upcoming, isLoading: upcomingLoading } = trpc.dashboard.upcomingTasks.useQuery({ days: 14, limit: 50 });
   const { data: alerts } = trpc.dashboard.alerts.useQuery(undefined, { enabled: user?.role === "admin" });
@@ -176,22 +187,83 @@ export default function Dashboard() {
             {greeting()}, {user?.name?.split(" ")[0] ?? "olá"}
           </h1>
           <p className="text-muted-foreground text-sm mt-1">
-            Receita, custo, lucro e horas dos seus projetos.
+            {canSeeMoney
+              ? "Receita, custo, lucro e horas dos seus projetos."
+              : "Horas da semana, capacidade e prazos dos seus projetos."}
           </p>
         </div>
-        <Button
-          onClick={() => setLocation("/projects")}
-          size="sm"
-          variant="outline"
-          className="gap-1.5"
-        >
-          <FolderKanban className="h-3.5 w-3.5" />
-          Ver projetos
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => setLocation("/hours")}
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+          >
+            <Clock className="h-3.5 w-3.5" />
+            Lançar horas
+          </Button>
+          <Button
+            onClick={() => setLocation("/projects")}
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+          >
+            <FolderKanban className="h-3.5 w-3.5" />
+            Ver projetos
+          </Button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {financeLoading ? (
+        {canSeeMoney ? (
+          financeLoading ? (
+            Array.from({ length: 4 }).map((_, i) => (
+              <Card key={i} className="border-0 shadow-sm">
+                <CardContent className="p-5">
+                  <Skeleton className="h-4 w-24 mb-2" />
+                  <Skeleton className="h-7 w-12" />
+                </CardContent>
+              </Card>
+            ))
+          ) : !financeProjects.length || !totals ? (
+            <Card className="border-0 shadow-sm col-span-2 lg:col-span-4">
+              <CardContent className="p-6 text-sm text-muted-foreground">
+                Nenhum projeto sob a sua gestão. O resumo mostra contratos e horas dos projetos em que você é owner ou admin.
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <StatCard
+                icon={DollarSign}
+                label="Receita real"
+                value={fmtBrl(totals.actualRevenue)}
+                sub="Parcelas recebidas"
+                color="bg-data-6/15 text-data-6-ink"
+              />
+              <StatCard
+                icon={Minus}
+                label="Custo real"
+                value={fmtBrl(totals.actualCost)}
+                sub="Horas e ajustes do contrato"
+                color="bg-data-4/15 text-data-4-ink"
+              />
+              <StatCard
+                icon={TrendingUp}
+                label="Lucro real"
+                value={fmtBrl(totals.actualProfit)}
+                sub="Receita menos custo"
+                color="bg-data-1/15 text-data-1-ink"
+              />
+              <StatCard
+                icon={Clock}
+                label="Horas lançadas"
+                value={formatHours(hoursLogged)}
+                sub="Nos projetos do resumo"
+                color="bg-primary/10 text-primary"
+              />
+            </>
+          )
+        ) : hoursLoading ? (
           Array.from({ length: 4 }).map((_, i) => (
             <Card key={i} className="border-0 shadow-sm">
               <CardContent className="p-5">
@@ -200,41 +272,39 @@ export default function Dashboard() {
               </CardContent>
             </Card>
           ))
-        ) : !financeProjects.length || !totals ? (
-          <Card className="border-0 shadow-sm col-span-2 lg:col-span-4">
-            <CardContent className="p-6 text-sm text-muted-foreground">
-              Nenhum projeto sob a sua gestão. O resumo mostra contratos e horas dos projetos em que você é owner ou admin.
-            </CardContent>
-          </Card>
         ) : (
           <>
             <StatCard
-              icon={DollarSign}
-              label="Receita real"
-              value={fmtBrl(totals.actualRevenue)}
-              sub="Parcelas recebidas"
-              color="bg-data-6/15 text-data-6-ink"
-            />
-            <StatCard
-              icon={Minus}
-              label="Custo real"
-              value={fmtBrl(totals.actualCost)}
-              sub="Horas e ajustes do contrato"
-              color="bg-data-4/15 text-data-4-ink"
-            />
-            <StatCard
-              icon={TrendingUp}
-              label="Lucro real"
-              value={fmtBrl(totals.actualProfit)}
-              sub="Receita menos custo"
-              color="bg-data-1/15 text-data-1-ink"
+              icon={Clock}
+              label="Esta semana"
+              value={`${formatHoursLabel(weekSheet?.workedThisWeek ?? 0)} / ${formatHoursLabel((weekSheet?.dailyTarget ?? DEFAULT_DAILY_TARGET) * 5)}`}
+              sub="Meta de segunda a sexta"
+              color="bg-primary/10 text-primary"
             />
             <StatCard
               icon={Clock}
-              label="Horas lançadas"
-              value={formatHours(hoursLogged)}
-              sub="Nos projetos do resumo"
-              color="bg-primary/10 text-primary"
+              label="Este mês"
+              value={
+                weekSheet?.monthlyCapacity
+                  ? `${formatHoursLabel(weekSheet.workedThisMonth)} / ${formatHoursLabel(weekSheet.monthlyCapacity)}`
+                  : formatHoursLabel(weekSheet?.workedThisMonth ?? 0)
+              }
+              sub="Capacidade do contrato"
+              color="bg-data-6/15 text-data-6-ink"
+            />
+            <StatCard
+              icon={FolderKanban}
+              label="Alocações"
+              value={String((weekSheet?.projects ?? []).filter((project) => project.allocatedHours != null).length)}
+              sub={`${(weekSheet?.projects ?? []).filter((project) => project.overAllocated).length} acima do previsto`}
+              color="bg-data-3/15 text-data-3-ink"
+            />
+            <StatCard
+              icon={Clock}
+              label="Meta diária"
+              value={formatHoursLabel(weekSheet?.dailyTarget ?? DEFAULT_DAILY_TARGET)}
+              sub="Abrir grelha de horas"
+              color="bg-data-1/15 text-data-1-ink"
             />
           </>
         )}
@@ -271,7 +341,7 @@ export default function Dashboard() {
                       ? `${row.nearestDeadline.title} · ${format(new Date(row.nearestDeadline.dueDate!), "dd/MM")}`
                       : "—"}
                   </p>
-                  {row.finance && (
+                  {canSeeMoney && row.finance && (
                     <div className="grid grid-cols-3 gap-1 text-[10px] pt-1 border-t">
                       <div>
                         <p className="text-muted-foreground">Receita</p>

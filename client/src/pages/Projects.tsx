@@ -1,7 +1,7 @@
 import { trpc } from "@/lib/trpc";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { useState, useEffect, useMemo } from "react";
-import { useLocation, useParams } from "wouter";
+import { Link, useLocation, useParams } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -409,7 +409,7 @@ function ProjectHoursTab({ projectId }: { projectId: number }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          As horas da aba Horas entram nesta lista. Cada pessoa tem um lançamento por dia.
+          As horas da <Link href="/hours" className="text-primary hover:underline">grelha semanal</Link> entram nesta lista. Cada pessoa tem um lançamento por dia.
         </p>
         <p className="text-sm font-semibold tabular-nums shrink-0">{totalHours.toFixed(1)}h no total</p>
       </div>
@@ -447,13 +447,14 @@ function ProjectHoursTab({ projectId }: { projectId: number }) {
   );
 }
 
-function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: number; isGlobalAdmin: boolean; area: ProjectArea }) {
+function ProjectFinanceTab({ projectId, area }: { projectId: number; area: ProjectArea }) {
   const utils = trpc.useUtils();
   const { data: summary } = trpc.projects.financeSummary.useQuery({ projectId });
   const { data: payments, isLoading: paymentsLoading } = trpc.crm.listPayments.useQuery({ projectId });
   const { data: lead } = trpc.crm.getLead.useQuery({ projectId });
-  const { data: acquisition } = trpc.projects.acquisitionCost.useQuery({ projectId }, { enabled: isGlobalAdmin && area === "prospectos" });
-  const { data: allProjects } = trpc.projects.list.useQuery(undefined, { enabled: isGlobalAdmin && area === "prospectos" });
+  const { user } = useAuth();
+  const { data: acquisition } = trpc.projects.acquisitionCost.useQuery({ projectId }, { enabled: Boolean(user?.canSeeMoney) && area === "prospectos" });
+  const { data: allProjects } = trpc.projects.list.useQuery(undefined, { enabled: Boolean(user?.canSeeMoney) && area === "prospectos" });
   const { data: project } = trpc.projects.byId.useQuery({ id: projectId });
 
   const [payDesc, setPayDesc] = useState("");
@@ -787,7 +788,7 @@ function ProjectFinanceTab({ projectId, isGlobalAdmin, area }: { projectId: numb
         </Collapsible>
       )}
 
-      {area === "prospectos" && isGlobalAdmin && acquisition && (
+      {area === "prospectos" && user?.canSeeMoney && acquisition && (
         <Collapsible defaultOpen={false}>
           <CollapsibleTrigger className="flex items-center gap-1 text-sm font-medium text-muted-foreground hover:text-foreground">
             <ChevronRight className="h-4 w-4" />
@@ -831,6 +832,7 @@ function formatSheetDate(value: string | Date) {
 
 function ProjectChain({ projectId, area }: { projectId: number; area: ProjectArea }) {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
   const billable = isBillableProjectArea(area);
   const { data: lead } = trpc.crm.getLead.useQuery({ projectId });
   const { data: contract } = trpc.crm.getContract.useQuery({ projectId }, { enabled: billable });
@@ -860,7 +862,9 @@ function ProjectChain({ projectId, area }: { projectId: number; area: ProjectAre
       )}
       {billable && contract ? (
         <Badge variant="outline" className="gap-1">
-          Contrato {fmtBrl(parseFloat(String(contract.totalValue)))} · {CONTRACT_STATUS_LABELS[contract.status] ?? contract.status}
+          Contrato
+          {user?.canSeeMoney ? ` ${fmtBrl(parseFloat(String(contract.totalValue)))} · ` : " "}
+          {CONTRACT_STATUS_LABELS[contract.status] ?? contract.status}
         </Badge>
       ) : billable ? (
         <Badge variant="outline">Sem contrato</Badge>
@@ -948,7 +952,6 @@ function ContractEventsCard({ projectId }: { projectId: number }) {
 function ProjectDetail({ projectId }: { projectId: number }) {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
-  const isGlobalAdmin = user?.role === "admin";
   const [showInvite, setShowInvite] = useState(false);
   const [showAddMember, setShowAddMember] = useState(false);
   const [showCreateBoard, setShowCreateBoard] = useState(false);
@@ -958,7 +961,7 @@ function ProjectDetail({ projectId }: { projectId: number }) {
   const { data: members, isLoading: membersLoading } = trpc.team.listMembers.useQuery({ projectId });
   const currentUserRole = members?.find((m) => m.userId === user?.id)?.role;
   const canManage = canManageProject(currentUserRole, user?.role);
-  const showFaturamento = project ? isBillableProjectArea(project.area) && (canManage || isGlobalAdmin) : false;
+  const showFaturamento = project ? isBillableProjectArea(project.area) && Boolean(user?.canSeeMoney) : false;
   const defaultTab = useMemo(() => {
     const tab = new URLSearchParams(window.location.search).get("tab");
     if (tab === "faturamento" && !showFaturamento) return "boards";
@@ -1088,7 +1091,7 @@ function ProjectDetail({ projectId }: { projectId: number }) {
         <TabsContent value="hours" className="mt-4"><ProjectHoursTab projectId={projectId} /></TabsContent>
         {showFaturamento && (
           <TabsContent value="faturamento" className="mt-4">
-            <ProjectFinanceTab projectId={projectId} isGlobalAdmin={!!isGlobalAdmin} area={project.area} />
+            <ProjectFinanceTab projectId={projectId} area={project.area} />
           </TabsContent>
         )}
         {canManage && (
@@ -1233,7 +1236,7 @@ export default function Projects() {
                         ? row.assignees.map((a) => a.name ?? `User ${a.id}`).join(", ")
                         : "—"}
                     </div>
-                    {user?.role === "admin" && row.finance && (
+                    {user?.canSeeMoney && row.finance && (
                       <div className="pt-1 border-t space-y-0.5">
                         <div>Receita: {fmtBrl(row.finance.projectedRevenue)}</div>
                         <div>Recebido: {fmtBrl(row.finance.received)}</div>
